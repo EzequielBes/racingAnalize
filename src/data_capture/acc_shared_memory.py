@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Implementação real da captura de telemetria para Assetto Corsa Competizione.
 Utiliza a memória compartilhada oficial do ACC para obter dados em tempo real.
@@ -16,18 +17,17 @@ import json
 import threading # Adicionado para locking
 import copy      # Adicionado para deepcopy
 
-# Configuração de logging
-logger = logging.getLogger("race_telemetry_api.acc")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-handler.setFormatter(formatter)
-# Evita adicionar handlers duplicados se o módulo for recarregado
-if not logger.hasHandlers():
-    logger.addHandler(handler)
+# Importa a estrutura de dados padronizada
+from src.core.standard_data import TelemetrySession, SessionInfo, TrackData, LapData, DataPoint
 
+# Configuração de logging
+logger = logging.getLogger(__name__) # Usa o nome do módulo
+# Configuração básica se não houver handlers (evita duplicação)
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 # --- Estruturas de Dados ACC (sem alterações) ---
+# (Estruturas SPageFilePhysics, SPageFileGraphic, SPageFileStatic permanecem as mesmas)
 class SPageFilePhysics(Structure):
     _fields_ = [
         ("packetId", c_int), ("gas", c_float), ("brake", c_float), ("fuel", c_float),
@@ -110,6 +110,7 @@ class SPageFileStatic(Structure):
     ]
 
 # --- Helper para conversão de ctypes para JSON (sem alterações) ---
+# (Função convert_ctypes_to_native permanece a mesma)
 def convert_ctypes_to_native(data):
     if isinstance(data, (int, float, str, bool)) or data is None:
         return data
@@ -136,105 +137,103 @@ def convert_ctypes_to_native(data):
 
 class ACCTelemetryCapture:
     """Classe para captura de telemetria do Assetto Corsa Competizione."""
-    
+
     def __init__(self):
         """Inicializa o capturador de telemetria do ACC."""
         self.physics_mmap = None
         self.graphics_mmap = None
         self.static_mmap = None
-        
-        self.physics_data = None
-        self.graphics_data = None
-        self.static_data = None
-        
+
+        self.physics_data = SPageFilePhysics()
+        self.graphics_data = SPageFileGraphic()
+        self.static_data = SPageFileStatic()
+
         self.is_connected = False
         self.is_capturing = False
         self.last_lap_number = -1
         self.capture_start_time = None
-        
+        self.last_packet_id = -1
+
         # Dados compartilhados entre threads (protegidos por lock)
         self.data_lock = threading.Lock()
-        self.data_points_buffer = []
-        self.current_lap_data = None
-        self.telemetry_data = {
-            "session": {},
-            "laps": []
-        }
-        
+        self.data_points_buffer: List[DataPoint] = []
+        self.current_lap_data: Optional[LapData] = None
+        self.telemetry_session: Optional[TelemetrySession] = None
+
         logger.info("Inicializando capturador de telemetria do ACC")
-    
+
     def connect(self) -> bool:
         logger.info("Tentando conectar à memória compartilhada do ACC")
+        if self.is_connected:
+            logger.warning("Já está conectado.")
+            return True
         try:
             self.physics_mmap = mmap.mmap(-1, sizeof(SPageFilePhysics), "Local\\acpmf_physics")
             self.graphics_mmap = mmap.mmap(-1, sizeof(SPageFileGraphic), "Local\\acpmf_graphics")
             self.static_mmap = mmap.mmap(-1, sizeof(SPageFileStatic), "Local\\acpmf_static")
-            
-            self.physics_data = SPageFilePhysics()
-            self.graphics_data = SPageFileGraphic()
-            self.static_data = SPageFileStatic()
-            
-            self._read_shared_memory() # Lê dados iniciais
-            
-            if self.static_data and self.static_data.track and self.static_data.carModel:
-                self.is_connected = True
-                logger.info(f"Conectado à memória compartilhada do ACC")
-                self._update_session_info() # Atualiza info da sessão com lock
-                return True
-            else:
-                logger.error("Dados de memória compartilhada inválidos ou ACC não está em execução")
+
+            # Lê dados estáticos para confirmar conexão e obter info da sessão
+            self._read_static_data()
+            if not self.static_data or not self.static_data.track or not self.static_data.carModel:
+                logger.error("Dados estáticos inválidos ou ACC não está em uma sessão ativa.")
                 self._cleanup_memory()
                 return False
-        except Exception as e:
-            logger.error(f"Erro ao conectar à memória compartilhada do ACC: {str(e)}")
+
+            self.is_connected = True
+            logger.info(f"Conectado à memória compartilhada do ACC (Track: {self.static_data.track}, Car: {self.static_data.carModel})")
+            self._initialize_telemetry_session() # Cria a estrutura da sessão
+            return True
+
+        except FileNotFoundError:
+            logger.error("Memória compartilhada do ACC não encontrada. O jogo está em execução?")
             self._cleanup_memory()
             return False
-    
+        except Exception as e:
+            logger.exception(f"Erro ao conectar à memória compartilhada do ACC: {e}")
+            self._cleanup_memory()
+            return False
+
     def disconnect(self) -> bool:
         logger.info("Tentando desconectar da memória compartilhada do ACC")
-        try:
-            if self.is_capturing:
-                self.stop_capture()
-            self._cleanup_memory()
-            self.is_connected = False
-            logger.info("Desconectado da memória compartilhada do ACC")
-            return True
-        except Exception as e:
-            logger.error(f"Erro ao desconectar da memória compartilhada do ACC: {str(e)}")
-            return False
-    
+        if self.is_capturing:
+            self.stop_capture()
+        self._cleanup_memory()
+        self.is_connected = False
+        self.telemetry_session = None # Limpa a sessão ao desconectar
+        logger.info("Desconectado da memória compartilhada do ACC")
+        return True
+
     def start_capture(self) -> bool:
         logger.info("Tentando iniciar captura de telemetria do ACC")
         if not self.is_connected:
-            logger.error("Não está conectado à memória compartilhada do ACC")
+            logger.error("Não está conectado à memória compartilhada do ACC.")
             return False
         if self.is_capturing:
-            logger.warning("Já está capturando telemetria do ACC")
-            return False
-        
+            logger.warning("Captura já está em andamento.")
+            return True
+
         with self.data_lock:
             self.is_capturing = True
             self.capture_start_time = time.time()
-            # Lê a última volta ANTES de limpar para evitar condição de corrida
-            if self.graphics_data:
-                 self.last_lap_number = self.graphics_data.completedLaps
-            else:
-                 self.last_lap_number = -1 # Garante que a primeira volta seja detectada
+            self.last_packet_id = -1 # Reseta para garantir leitura inicial
+            # Lê dados gráficos para pegar a volta atual ANTES de limpar
+            self._read_graphics_data()
+            self.last_lap_number = self.graphics_data.completedLaps if self.graphics_data else -1
             self.data_points_buffer = []
             self.current_lap_data = None
-            # Limpa apenas as voltas, mantém a info da sessão
-            self.telemetry_data["laps"] = [] 
-            
-        logger.info("Captura de telemetria do ACC iniciada com sucesso")
+            # Reinicializa a sessão para limpar voltas antigas
+            self._initialize_telemetry_session()
+
+        logger.info("Captura de telemetria do ACC iniciada.")
         return True
-    
+
     def stop_capture(self) -> bool:
         logger.info("Tentando parar captura de telemetria do ACC")
         if not self.is_capturing:
-            logger.warning("Não está capturando telemetria do ACC")
-            return False
-        
-        file_path = None
+            logger.warning("Captura não está em andamento.")
+            return True # Já está parado
+
+        telemetry_to_save = None
         with self.data_lock:
             self.is_capturing = False # Sinaliza para parar a coleta
             # Finaliza a volta atual se houver dados (dentro do lock)
@@ -242,286 +241,303 @@ class ACCTelemetryCapture:
                 self._finalize_current_lap_nolock()
             self.capture_start_time = None
             # Faz cópia para salvar fora do lock
-            telemetry_to_save = copy.deepcopy(self.telemetry_data)
-            
-        logger.info("Captura de telemetria do ACC parada com sucesso")
-        
-        # Salva os dados fora do lock principal
-        file_path = self._save_telemetry_data(telemetry_to_save)
-        
+            if self.telemetry_session:
+                telemetry_to_save = copy.deepcopy(self.telemetry_session)
+
+        logger.info("Captura de telemetria do ACC parada.")
+
+        # Salva os dados fora do lock principal (se houver)
+        # if telemetry_to_save:
+        #     self._save_telemetry_data(telemetry_to_save)
+
         return True
-    
-    def get_telemetry_data(self) -> Dict[str, Any]:
-        """Retorna uma cópia segura dos dados de telemetria atuais."""
-        with self.data_lock:
-            # Retorna uma cópia profunda para segurança da thread da UI
-            return copy.deepcopy(self.telemetry_data)
-    
-    def run_capture_loop(self): 
+
+    def get_current_data(self) -> Optional[Dict[str, Any]]:
+        """Retorna os dados mais recentes lidos da memória compartilhada (formato nativo)."""
+        if not self.is_connected:
+            return None
+        # Lê os dados mais recentes fora do lock principal para minimizar bloqueio
+        self._read_physics_data()
+        self._read_graphics_data()
+        # Static data é lido na conexão
+
+        # Retorna cópias para evitar modificação externa
+        return {
+            "physics": copy.deepcopy(self.physics_data) if self.physics_data else None,
+            "graphics": copy.deepcopy(self.graphics_data) if self.graphics_data else None,
+            "static": copy.deepcopy(self.static_data) if self.static_data else None
+        }
+
+    def get_telemetry_session(self) -> Optional[TelemetrySession]:
+         """Retorna uma cópia segura da sessão de telemetria atual."""
+         with self.data_lock:
+             return copy.deepcopy(self.telemetry_session)
+
+    def run_capture_loop(self):
         """Método principal do loop de captura (executado em uma thread separada)."""
-        while self.is_capturing: # Verifica a flag dentro do loop
+        logger.info("Iniciando loop de captura ACC...")
+        while True:
+            with self.data_lock:
+                if not self.is_capturing:
+                    break # Sai do loop se stop_capture foi chamado
+
             start_time = time.perf_counter()
-            
+
             # Lê os dados mais recentes da memória compartilhada
-            self._read_shared_memory()
-            
+            self._read_physics_data()
+            self._read_graphics_data()
+
             # Processa os dados (detecta voltas, coleta pontos)
-            # A modificação dos dados compartilhados acontece dentro de _process_telemetry_data com lock
             if self.physics_data and self.graphics_data:
-                 self._process_telemetry_data()
-            
+                # Verifica se há um novo pacote de dados
+                current_packet_id = self.physics_data.packetId
+                if current_packet_id != self.last_packet_id:
+                    self.last_packet_id = current_packet_id
+                    # Processa apenas se houver dados novos
+                    self._process_telemetry_data()
+                # else: logger.debug("Nenhum pacote novo de física.")
+            # else: logger.debug("Dados de física ou gráficos não disponíveis.")
+
             # Controla a taxa de atualização (ex: 60Hz)
             elapsed = time.perf_counter() - start_time
-            sleep_time = (1/60) - elapsed
+            sleep_time = (1/60) - elapsed # Ajuste a frequência conforme necessário
             if sleep_time > 0:
                 time.sleep(sleep_time)
-            
-            # Verifica novamente se a captura deve continuar
-            with self.data_lock:
-                 if not self.is_capturing:
-                      break # Sai do loop se stop_capture foi chamado
 
-    def _read_shared_memory(self):
-        if not self.physics_mmap or not self.graphics_mmap or not self.static_mmap:
+        logger.info("Loop de captura ACC finalizado.")
+
+    # --- Métodos Privados ---
+    def _read_static_data(self):
+        if not self.static_mmap:
+            return
+        try:
+            self.static_mmap.seek(0)
+            static_buffer = self.static_mmap.read(sizeof(SPageFileStatic))
+            self.static_data = SPageFileStatic.from_buffer_copy(static_buffer)
+        except Exception as e:
+            logger.error(f"Erro ao ler dados estáticos: {e}")
+            self.static_data = None
+
+    def _read_physics_data(self):
+        if not self.physics_mmap:
             return
         try:
             self.physics_mmap.seek(0)
-            self.graphics_mmap.seek(0)
-            self.static_mmap.seek(0)
             physics_buffer = self.physics_mmap.read(sizeof(SPageFilePhysics))
-            graphics_buffer = self.graphics_mmap.read(sizeof(SPageFileGraphic))
-            static_buffer = self.static_mmap.read(sizeof(SPageFileStatic))
             self.physics_data = SPageFilePhysics.from_buffer_copy(physics_buffer)
-            self.graphics_data = SPageFileGraphic.from_buffer_copy(graphics_buffer)
-            # Static data muda raramente, poderia otimizar leitura
-            self.static_data = SPageFileStatic.from_buffer_copy(static_buffer)
         except Exception as e:
-            # logger.error(f"Erro ao ler memória compartilhada: {str(e)}") # Pode poluir logs
+            # logger.warning(f"Erro ao ler dados de física: {e}") # Pode ser comum se o jogo fechar
             self.physics_data = None
+
+    def _read_graphics_data(self):
+        if not self.graphics_mmap:
+            return
+        try:
+            self.graphics_mmap.seek(0)
+            graphics_buffer = self.graphics_mmap.read(sizeof(SPageFileGraphic))
+            self.graphics_data = SPageFileGraphic.from_buffer_copy(graphics_buffer)
+        except Exception as e:
+            # logger.warning(f"Erro ao ler dados gráficos: {e}")
             self.graphics_data = None
-            self.static_data = None
-    
+
+    def _initialize_telemetry_session(self):
+        """Cria ou reinicia a estrutura TelemetrySession com base nos dados estáticos."""
+        if not self.static_data:
+            logger.error("Não é possível inicializar a sessão sem dados estáticos.")
+            return
+
+        with self.data_lock:
+            session_info = SessionInfo(
+                game="Assetto Corsa Competizione",
+                track=self.static_data.track,
+                vehicle=self.static_data.carModel,
+                driver=f"{self.static_data.playerName} {self.static_data.playerSurname}".strip(),
+                session_type=self._map_session_type(self.graphics_data.session if self.graphics_data else -1),
+                date=datetime.now() # Usar data/hora atual do início da captura
+            )
+            track_data = TrackData(
+                track_name=self.static_data.track,
+                length_m=self.static_data.trackSplineLength,
+                sector_markers_m=[] # TODO: Obter marcadores de setor se possível
+            )
+            self.telemetry_session = TelemetrySession(
+                session_info=session_info,
+                track_data=track_data,
+                laps=[]
+            )
+            logger.info("Estrutura TelemetrySession inicializada.")
+
+    def _process_telemetry_data(self):
+        """Processa os dados lidos e atualiza a estrutura de telemetria (com lock)."""
+        if not self.physics_data or not self.graphics_data or not self.static_data:
+            # logger.debug("Dados incompletos para processamento.")
+            return
+
+        with self.data_lock:
+            if not self.is_capturing or not self.telemetry_session:
+                return # Não processa se não estiver capturando ou sem sessão
+
+            # --- Detecção de Nova Volta ---
+            current_lap = self.graphics_data.completedLaps
+            # Usa iLastTime > 0 como indicador de que uma volta foi completada
+            # E verifica se o número da volta realmente incrementou
+            if self.graphics_data.iLastTime > 0 and current_lap > self.last_lap_number:
+                logger.info(f"Nova volta detectada: {current_lap} (Tempo: {self.graphics_data.iLastTime / 1000:.3f}s)")
+                # Finaliza a volta anterior (se existir)
+                if self.current_lap_data and self.data_points_buffer:
+                    self._finalize_current_lap_nolock()
+
+                # Inicia a nova volta
+                self.last_lap_number = current_lap
+                self.current_lap_data = LapData(
+                    lap_number=current_lap, # Usa a volta completada como número da volta anterior
+                    lap_time_ms=self.graphics_data.iLastTime,
+                    sector_times_ms=[], # TODO: Capturar tempos de setor
+                    is_valid=bool(self.graphics_data.isValidLap),
+                    data_points=[] # O buffer será movido para cá ao finalizar
+                )
+                self.data_points_buffer = [] # Limpa buffer para a nova volta
+
+            # --- Coleta de Ponto de Dados Atual ---
+            # Mapeia os dados crus para a estrutura DataPoint
+            # Certifique-se de que os nomes dos campos correspondem aos da classe DataPoint
+            try:
+                data_point = DataPoint(
+                    timestamp_ms=int(time.time() * 1000), # Usar timestamp do sistema
+                    # Ou usar self.graphics_data.clock ? Precisa verificar o que representa
+                    distance_m=self.graphics_data.distanceTraveled,
+                    speed_kmh=self.physics_data.speedKmh,
+                    rpm=self.physics_data.rpms,
+                    gear=self.physics_data.gear,
+                    throttle=self.physics_data.gas,
+                    brake=self.physics_data.brake,
+                    steer_angle=self.physics_data.steerAngle,
+                    clutch=self.physics_data.clutch,
+                    # Adicionar mais campos conforme necessário e disponíveis
+                    pos_x=self.graphics_data.carCoordinates[0], # Posição do jogador
+                    pos_y=self.graphics_data.carCoordinates[1],
+                    pos_z=self.graphics_data.carCoordinates[2],
+                    # Outros campos podem precisar de cálculo ou vir de outros locais
+                    lap_number=current_lap + 1, # Número da volta atual
+                    sector=self.graphics_data.currentSectorIndex + 1, # Setor atual (base 1)
+                    # ... outros campos como None ou 0 por padrão
+                    tyre_press_fl=self.physics_data.wheelsPressure[0],
+                    tyre_press_fr=self.physics_data.wheelsPressure[1],
+                    tyre_press_rl=self.physics_data.wheelsPressure[2],
+                    tyre_press_rr=self.physics_data.wheelsPressure[3],
+                    tyre_temp_fl=self.physics_data.tyreCoreTemperature[0],
+                    tyre_temp_fr=self.physics_data.tyreCoreTemperature[1],
+                    tyre_temp_rl=self.physics_data.tyreCoreTemperature[2],
+                    tyre_temp_rr=self.physics_data.tyreCoreTemperature[3],
+                    # etc.
+                )
+                self.data_points_buffer.append(data_point)
+            except Exception as e:
+                 logger.exception(f"Erro ao criar DataPoint: {e}")
+
+    def _finalize_current_lap_nolock(self):
+        """Finaliza a volta atual, movendo o buffer para a lista de voltas (sem lock)."""
+        if self.current_lap_data and self.data_points_buffer and self.telemetry_session:
+            logger.debug(f"Finalizando volta {self.current_lap_data.lap_number} com {len(self.data_points_buffer)} pontos.")
+            self.current_lap_data.data_points = self.data_points_buffer
+            # Recalcula o tempo da volta com base nos timestamps dos pontos, se necessário?
+            # Ou confia no iLastTime?
+            # Por enquanto, confia no iLastTime.
+            self.telemetry_session.laps.append(self.current_lap_data)
+            self.current_lap_data = None
+            self.data_points_buffer = []
+        # else: logger.debug("Nenhuma volta atual ou buffer vazio para finalizar.")
+
+    def _map_session_type(self, session_code: int) -> str:
+        """Mapeia o código da sessão ACC para um nome legível."""
+        mapping = {
+            0: "Practice", 1: "Qualify", 2: "Race",
+            3: "Hotlap", 4: "Time Attack", 5: "Drift",
+            6: "Drag", 7: "Hotstint", 8: "Hotlap Superpole"
+        }
+        return mapping.get(session_code, f"Unknown ({session_code})")
+
     def _cleanup_memory(self):
+        """Fecha os handles de memória compartilhada."""
         try:
             if self.physics_mmap: self.physics_mmap.close()
             if self.graphics_mmap: self.graphics_mmap.close()
             if self.static_mmap: self.static_mmap.close()
         except Exception as e:
-            logger.error(f"Erro ao limpar recursos de memória: {str(e)}")
+            logger.error(f"Erro ao fechar handles de memória: {e}")
         finally:
-             self.physics_mmap = self.graphics_mmap = self.static_mmap = None
-             self.physics_data = self.graphics_data = self.static_data = None
-    
-    def _update_session_info(self):
-        """Atualiza as informações da sessão com tipos nativos (com lock)."""
-        if not self.static_data or not self.physics_data or not self.graphics_data:
-            return
-        
-        # Converte estruturas ctypes para dicionários nativos
-        # Faz a conversão fora do lock para minimizar tempo bloqueado
-        try:
-            static_native = convert_ctypes_to_native(self.static_data)
-            physics_native = convert_ctypes_to_native(self.physics_data)
-            graphics_native = convert_ctypes_to_native(self.graphics_data)
-        except Exception as e:
-            logger.error(f"Erro ao converter dados ctypes para nativos: {e}")
-            return
+            self.physics_mmap = None
+            self.graphics_mmap = None
+            self.static_mmap = None
+            self.physics_data = SPageFilePhysics() # Reseta structs
+            self.graphics_data = SPageFileGraphic()
+            self.static_data = SPageFileStatic()
 
-        with self.data_lock: # Bloqueia apenas para atualizar o dict compartilhado
-            track_name = static_native.get("track", "Desconhecido").strip()
-            car_model = static_native.get("carModel", "Desconhecido").strip()
-            track_temp = physics_native.get("roadTemp", 25)
-            air_temp = physics_native.get("airTemp", 20)
-            conditions = "Desconhecido"
-            rain_intensity = graphics_native.get("rainIntensity", 0)
-            if rain_intensity == 0: conditions = "Ensolarado"
-            elif rain_intensity == 1: conditions = "Nublado"
-            elif rain_intensity >= 2: conditions = "Chuvoso"
-            
-            self.telemetry_data["session"] = {
-                "track": track_name,
-                "car": car_model,
-                "conditions": conditions,
-                "temperature": {"air": air_temp, "track": track_temp},
-                "player": static_native.get("playerName", "Piloto").strip()
-            }
-    
-    def _process_telemetry_data(self):
-        """Processa os dados de telemetria (chamado pelo loop de captura)."""
-        # Lê dados necessários fora do lock
-        current_lap = self.graphics_data.completedLaps
-        last_lap_read = self.last_lap_number # Lê o valor atual antes do lock
-        
-        # Bloqueia para modificar dados compartilhados
-        with self.data_lock:
-            # Verifica se a captura ainda está ativa
-            if not self.is_capturing:
-                 return
-                 
-            # Verifica nova volta
-            if current_lap > last_lap_read and last_lap_read >= 0:
-                if self.current_lap_data and self.data_points_buffer:
-                    self._finalize_current_lap_nolock()
-                self._start_new_lap_nolock(current_lap)
-            
-            # Atualiza o número da última volta *dentro* do lock
-            self.last_lap_number = current_lap
-            
-            # Coleta ponto de dados (modifica buffer e current_lap_data)
-            self._collect_data_point_nolock()
+    # def _save_telemetry_data(self, data_to_save: TelemetrySession):
+    #     """Salva os dados de telemetria capturados em um arquivo (ex: JSON)."""
+    #     if not data_to_save or not data_to_save.session_info:
+    #         logger.warning("Nenhum dado de telemetria para salvar.")
+    #         return None
+    #     try:
+    #         # Cria um nome de arquivo baseado na sessão
+    #         timestamp = data_to_save.session_info.date.strftime("%Y%m%d_%H%M%S")
+    #         filename = f"ACC_{data_to_save.session_info.track}_{timestamp}.json"
+    #         save_path = os.path.join(os.getcwd(), "telemetry_logs", filename) # Salva em subpasta
+    #         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    # --- Métodos _nolock para modificar estado compartilhado --- 
-    
-    def _start_new_lap_nolock(self, lap_number: int):
-        """Inicia nova volta (assume lock externo)."""
-        self.current_lap_data = {
-            "lap_number": lap_number,
-            "lap_time": 0,
-            "sectors": [],
-            "data_points": []
-        }
-        self.data_points_buffer = []
-        # logger.info(f"Iniciando volta {lap_number}") # Log pode ser movido para fora se necessário
-    
-    def _collect_data_point_nolock(self):
-        """Coleta ponto de dados (assume lock externo)."""
-        if not self.current_lap_data:
-            # logger.warning("Tentando coletar ponto sem volta atual iniciada.")
-            # Tenta iniciar a volta 0 se for o caso inicial
-            if self.last_lap_number <= 0:
-                 self._start_new_lap_nolock(0)
-            else: # Evita coletar se a volta não foi devidamente iniciada
-                 return
+    #         # Converte para dicionário antes de salvar como JSON
+    #         # (Precisa de uma função para converter TelemetrySession e seus conteúdos)
+    #         # data_dict = convert_telemetry_session_to_dict(data_to_save)
 
-        # Usa os dados ctypes lidos fora do lock
-        if not self.physics_data or not self.graphics_data:
-            # logger.warning("Dados de física ou gráficos ausentes ao coletar ponto.")
-            return
+    #         # Simplificação: Usando convert_ctypes_to_native (não ideal para TelemetrySession)
+    #         # Uma função to_dict() nas classes de dados seria melhor.
+    #         # Por enquanto, vamos pular a serialização complexa.
+    #         logger.info(f"Salvar dados em {save_path} (funcionalidade pendente)")
+    #         # with open(save_path, "w", encoding="utf-8") as f:
+    #         #     json.dump(data_dict, f, indent=4)
 
-        position = [0.0, 0.0, 0.0]
-        try:
-            player_id = self.graphics_data.playerCarID
-            if player_id >= 0 and player_id < 60:
-                coords = self.graphics_data.carCoordinates[player_id * 3 : player_id * 3 + 3]
-                position = [float(c) for c in coords]
-        except Exception as e:
-             logger.error(f"Erro ao extrair coordenadas do carro: {e}")
+    #         logger.info(f"Dados de telemetria salvos (simulado) em: {save_path}")
+    #         return save_path
+    #     except Exception as e:
+    #         logger.exception(f"Erro ao salvar dados de telemetria: {e}")
+    #         return None
 
-        capture_time = self.capture_start_time if self.capture_start_time else time.time()
-        data_point = {
-            "time": time.time() - capture_time,
-            "distance": float(self.graphics_data.distanceTraveled),
-            "position": position,
-            "speed": float(self.physics_data.speedKmh),
-            "rpm": int(self.physics_data.rpms),
-            "gear": int(self.physics_data.gear),
-            "throttle": float(self.physics_data.gas),
-            "brake": float(self.physics_data.brake),
-            "clutch": float(self.physics_data.clutch),
-            "steer": float(self.physics_data.steerAngle),
-            "sector": int(self.graphics_data.currentSectorIndex)
-        }
-        self.data_points_buffer.append(data_point)
-    
-    def _finalize_current_lap_nolock(self):
-        """Finaliza volta atual (assume lock externo)."""
-        if not self.current_lap_data or not self.data_points_buffer:
-            return
-        
-        lap_time = float(self.graphics_data.iLastTime) / 1000.0
-        self.current_lap_data["lap_time"] = lap_time
-        self.current_lap_data["data_points"] = self.data_points_buffer
-        
-        sectors = []
-        sector_count = int(self.static_data.sectorCount)
-        if sector_count > 0 and lap_time > 0:
-            # Simplificado
-            for i in range(sector_count):
-                sectors.append({"sector": i + 1, "time": lap_time / sector_count})
-        self.current_lap_data["sectors"] = sectors
-        
-        # Adiciona a volta finalizada à lista principal
-        self.telemetry_data["laps"].append(self.current_lap_data)
-        
-        logger.info(f"Volta {self.current_lap_data["lap_number"]} finalizada: {lap_time:.3f}s")
-        
-        # Limpa para a próxima volta
-        self.current_lap_data = None
-        self.data_points_buffer = []
-    
-    def _save_telemetry_data(self, telemetry_data_to_save: Dict):
-        """Salva os dados de telemetria fornecidos."""
-        if not telemetry_data_to_save or not telemetry_data_to_save.get("laps"):
-            logger.warning("Nenhum dado de telemetria para salvar")
-            return None
-        
-        try:
-            user_data_dir = os.path.join(os.path.expanduser("~"), "RaceTelemetryAnalyzer")
-            telemetry_dir = os.path.join(user_data_dir, "telemetry")
-            os.makedirs(telemetry_dir, exist_ok=True)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            session = telemetry_data_to_save.get("session", {})
-            track = session.get("track", "unknown").replace(" ", "_").lower()
-            car = session.get("car", "unknown").replace(" ", "_").lower()
-            file_name = f"acc_{track}_{car}_{timestamp}.json"
-            file_path = os.path.join(telemetry_dir, file_name)
-            
-            with open(file_path, "w") as f:
-                json.dump(telemetry_data_to_save, f, indent=2)
-            
-            logger.info(f"Dados de telemetria salvos em: {file_path}")
-            return file_path
-        
-        except TypeError as e:
-             logger.error(f"Erro de tipo ao salvar JSON: {e}. Verifique a conversão de dados.")
-             return None
-        except Exception as e:
-            logger.error(f"Erro inesperado ao salvar dados de telemetria: {str(e)}")
-            return None
-
-# --- Função de teste (sem alterações significativas) ---
-def test_acc_capture():
+# Exemplo de uso (para teste direto do módulo)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG) # Habilita DEBUG para teste
     capture = ACCTelemetryCapture()
-    capture_thread = None
-    
-    print("Tentando conectar ao ACC...")
     if capture.connect():
-        print("Conectado com sucesso!")
-        print("Iniciando captura...")
+        print("Conectado ao ACC. Iniciando captura por 15 segundos...")
         if capture.start_capture():
-            # Inicia o loop de captura em uma thread separada
+            # Simula a execução em uma thread
             capture_thread = threading.Thread(target=capture.run_capture_loop, daemon=True)
             capture_thread.start()
-            print("Captura iniciada em background. Pressione Ctrl+C para parar.")
-            
-            try:
-                while True:
-                    # Obtém cópia segura dos dados
-                    data = capture.get_telemetry_data()
-                    laps = len(data.get("laps", []))
-                    
-                    # Acessa dados ctypes lidos pela thread de captura (pode ser None)
-                    physics = capture.physics_data
-                    speed = physics.speedKmh if physics else 0
-                    rpms = physics.rpms if physics else 0
-                    print(f"\rVoltas: {laps} | Velocidade: {speed:.1f} km/h | RPM: {rpms}   ", end="")
-                    
-                    time.sleep(0.5) # Atualiza a UI mais devagar
-            
-            except KeyboardInterrupt:
-                print("\nParando captura...")
-                capture.stop_capture() # Sinaliza para a thread parar
-                if capture_thread:
-                     capture_thread.join(timeout=2) # Espera a thread terminar
-                print("Captura finalizada.")
-        
-        print("Desconectando...")
-        capture.disconnect()
-        print("Desconectado.")
-    else:
-        print("Falha ao conectar. Verifique se o ACC está em execução.")
 
-if __name__ == "__main__":
-    test_acc_capture()
+            time.sleep(15) # Captura por 15 segundos
+
+            print("Parando captura...")
+            capture.stop_capture()
+            capture_thread.join(timeout=2) # Espera a thread terminar
+
+            # Obtém e imprime os dados finais
+            final_data = capture.get_telemetry_session()
+            if final_data:
+                print("--- Informações da Sessão ---")
+                print(f"Pista: {final_data.session_info.track}")
+                print(f"Carro: {final_data.session_info.vehicle}")
+                print(f"Piloto: {final_data.session_info.driver}")
+                print(f"Data: {final_data.session_info.date}")
+                print(f"Número de Voltas Capturadas: {len(final_data.laps)}")
+                for lap in final_data.laps:
+                    print(f"  Volta {lap.lap_number}: Tempo={lap.lap_time_ms/1000:.3f}s, Pontos={len(lap.data_points)}, Válida={lap.is_valid}")
+                    if lap.data_points:
+                         # Imprime alguns dados do primeiro ponto da volta
+                         dp0 = lap.data_points[0]
+                         print(f"    DP[0]: Time={dp0.timestamp_ms}, Dist={dp0.distance_m:.1f}, Spd={dp0.speed_kmh:.1f}, RPM={dp0.rpm}, Gear={dp0.gear}")
+            else:
+                 print("Nenhum dado de sessão capturado.")
+
+        capture.disconnect()
+    else:
+        print("Falha ao conectar ao ACC. Certifique-se de que o jogo está rodando em uma sessão.")
 

@@ -1,218 +1,101 @@
 # Guia do Usuário - Race Telemetry Analyzer
 
-## Introdução
+## 1. Introdução
+
+Bem-vindo ao Race Telemetry Analyzer! Esta ferramenta foi desenvolvida para ajudar pilotos de simuladores de corrida a analisar sua performance através da telemetria, oferecendo insights para melhoria contínua.
+
+Este guia descreve a arquitetura do sistema, as funcionalidades implementadas e como utilizar a ferramenta.
+
+## 2. Visão Geral da Arquitetura
+
+O sistema foi construído com uma arquitetura modular em Python, projetada para ser extensível e suportar múltiplos simuladores e modos de operação (tempo real e importação de arquivos).
+
+Os principais componentes são:
+
+*   **Aquisição de Dados (`data_acquisition`):** Responsável por conectar-se aos simuladores (via memória compartilhada, SDKs, ou monitoramento de arquivos) e importar dados de arquivos de telemetria (MoTeC .ld/.ldx, iRacing .ibt - *parser pendente*, CSV, JSON). Contém implementações parciais para ACC e LMU baseadas no código original e pesquisa, além de parsers específicos.
+*   **Núcleo (`core`):** Orquestra o fluxo de dados e define as estruturas de dados padronizadas (`standard_data.py`) usadas internamente.
+*   **Processamento e Análise (`processing_analysis`):** Contém a lógica para processar os dados padronizados (`telemetry_processor.py`), calcular métricas, gerar traçados e comparar voltas (`lap_comparator.py`).
+*   **Interface Gráfica (`ui`):** Responsável pela interação com o usuário (baseada em PyQt6). Inclui widgets para visualização de traçados, gráficos de telemetria e comparação de voltas (`comparison_widget.py` - estrutura implementada).
+*   **Persistência (`persistence`):** (Não implementado nesta fase) Gerenciaria o armazenamento de sessões e configurações.
+
+Consulte `docs/arquitetura_refinada.md` para detalhes completos da arquitetura projetada.
+
+## 3. Funcionalidades Implementadas
+
+*   **Estrutura de Projeto Modular:** O código está organizado em diretórios seguindo a arquitetura definida.
+*   **Estrutura de Dados Padronizada:** Definição clara das estruturas para Sessão, Volta, Ponto de Dados e Pista em `src/core/standard_data.py`.
+*   **Processamento de Telemetria:** Implementação do `TelemetryProcessor` em `src/processing_analysis/telemetry_processor.py` capaz de:
+    *   Ler dados padronizados de uma volta.
+    *   Extrair canais essenciais (velocidade, RPM, pedais, volante, etc.).
+    *   Gerar o traçado do piloto (coordenadas X, Y).
+    *   Calcular estatísticas básicas de velocidade por setor.
+    *   Gerar um mapa agregado da pista a partir dos traçados das voltas.
+*   **Importação de Arquivos:**
+    *   Módulo `telemetry_import.py` com lógica para detectar e chamar parsers específicos.
+    *   Parser para MoTeC (`.ld`, `.ldx`) implementado em `src/data_acquisition/parsers.py` (com base na estrutura LD, requer testes e ajustes para LDX).
+    *   Estrutura para parser IBT (`.ibt`) criada, mas a implementação do parsing binário está pendente.
+    *   Importadores básicos para CSV e JSON (assumindo formatos específicos).
+*   **Comparação de Voltas:**
+    *   Implementação do `LapComparator` em `src/processing_analysis/lap_comparator.py` capaz de:
+        *   Alinhar dados de duas voltas por distância usando interpolação.
+        *   Comparar canais de telemetria selecionados.
+        *   Calcular o gráfico de delta time entre as voltas.
+        *   Fornecer os traçados das duas voltas para visualização sobreposta.
+*   **Interface de Comparação (Estrutura):** O arquivo `src/ui/comparison_widget.py` contém a estrutura (placeholder) de um widget PyQt6 para seleção de voltas e exibição dos resultados da comparação (plots de traçado, canais e delta time), incluindo a lógica básica de interação.
+
+## 4. Como Utilizar (Conceitual)
+
+1.  **Execução:** Inicie a aplicação (requer ambiente Python com dependências como PyQt6, NumPy, Pandas, PyQtGraph instaladas). O ponto de entrada principal seria `run.py` ou `main.py` (a ser finalizado).
+2.  **Conexão/Importação:**
+    *   **Tempo Real:** Selecione o simulador (ACC, LMU, iRacing) e conecte-se. A aplicação começará a capturar dados em segundo plano.
+    *   **Importação:** Use a opção "Importar Arquivo", selecione o arquivo de telemetria (.ld, .ldx, .ibt, .csv, .json). A aplicação processará o arquivo.
+3.  **Análise de Sessão:** Após a captura ou importação, a sessão será exibida. Você poderá ver informações gerais e a lista de voltas.
+4.  **Visualização de Volta Única:** Selecione uma volta para ver seus detalhes:
+    *   Traçado na pista.
+    *   Gráficos de telemetria (velocidade, RPM, pedais, etc.) vs. distância ou tempo.
+5.  **Comparação de Voltas:**
+    *   Navegue até a tela/widget de comparação.
+    *   Selecione duas voltas válidas da sessão carregada nos menus dropdown.
+    *   Clique em "Comparar".
+    *   Os gráficos serão atualizados mostrando:
+        *   Traçados das duas voltas sobrepostos no mapa.
+        *   Gráficos dos canais selecionados (ex: velocidade) das duas voltas sobrepostos.
+        *   Gráfico do delta time (diferença de tempo acumulada) entre as voltas.
+    *   Utilize o cursor interativo (passando o mouse sobre os gráficos de canais ou delta) para ver os valores correspondentes em todos os gráficos e no mapa da pista.
+
+## 5. Próximos Passos e Limitações
+
+*   **Teste com Dados Reais:** A validação completa requer testes extensivos com dados reais de todos os simuladores suportados (ACC, LMU, iRacing) em um ambiente com os jogos instalados.
+*   **Interface Gráfica:** A UI precisa ser completamente implementada e integrada com a lógica de backend (processamento, importação, comparação).
+*   **Captura em Tempo Real:** As implementações de captura em tempo real (`ACCTelemetryProvider`, `LMUTelemetryProvider`, `iRacingTelemetryProvider`) precisam ser finalizadas e testadas.
+*   **Parsers:** O parser MoTeC LDX precisa de refinamento e testes. O parser IBT precisa ser implementado.
+*   **Assetto Corsa Evo:** Requer pesquisa para determinar APIs/formatos de telemetria e implementação subsequente.
+*   **Replays:** A importação de replays não foi implementada e geralmente é complexa.
+*   **Análise Avançada:** Funcionalidades como detecção automática de erros, sugestões de melhoria, análise de setup, etc., não foram incluídas nesta fase.
+*   **Persistência:** O salvamento/carregamento de sessões analisadas não foi implementado.
+*   **Empacotamento:** A criação de um executável standalone (via PyInstaller) requer configuração adicional.
+
+## 6. Estrutura do Código Fonte
+
+O código fonte está organizado da seguinte forma:
+
+```
+/racingAnalize
+|-- docs/                 # Documentação (arquitetura, guia)
+|-- src/
+|   |-- core/             # Núcleo, dados padronizados
+|   |-- data_acquisition/ # Captura em tempo real e parsers de importação
+|   |-- processing_analysis/ # Processamento, análise, comparação
+|   |-- ui/               # Componentes da interface gráfica
+|   |-- __init__.py
+|   |-- main.py           # Ponto de entrada principal (a ser finalizado)
+|   |-- telemetry_analysis.py # (Refatorado para processing_analysis)
+|   |-- telemetry_comparison.py # (Refatorado para processing_analysis)
+|   |-- telemetry_import.py   # Lógica de importação
+|-- tests/                # Testes unitários/integração (a serem criados)
+|-- tools/                # Ferramentas auxiliares (empacotamento)
+|-- executar.bat          # Script de execução (Windows)
+|-- run.py                # Script de execução (Cross-platform)
+|-- todo.md               # Lista de tarefas do desenvolvimento
+```
 
-O Race Telemetry Analyzer é uma ferramenta profissional para análise de telemetria em simuladores de corrida como Assetto Corsa Competizione e Le Mans Ultimate. Desenvolvido para pilotos virtuais que buscam melhorar seus tempos de volta, o aplicativo oferece recursos avançados de análise, comparação e visualização de dados de telemetria.
-
-Este guia apresenta as principais funcionalidades do Race Telemetry Analyzer e como utilizá-las para extrair o máximo de desempenho em suas corridas virtuais.
-
-## Instalação
-
-### Requisitos do Sistema
-
-- Sistema Operacional: Windows 10/11 (64 bits)
-- Processador: Intel Core i3 ou AMD Ryzen 3 ou superior
-- Memória RAM: 4GB (mínimo), 8GB (recomendado)
-- Espaço em Disco: 500MB
-- Placa de Vídeo: Compatível com DirectX 11
-- Resolução de Tela: 1366x768 ou superior
-
-### Processo de Instalação
-
-1. Execute o arquivo `RaceTelemetryAnalyzer-Setup.exe`
-2. Siga as instruções do assistente de instalação
-3. Após a conclusão, o Race Telemetry Analyzer estará disponível no menu Iniciar e na área de trabalho
-
-## Visão Geral da Interface
-
-O Race Telemetry Analyzer possui uma interface minimalista e intuitiva, dividida em cinco seções principais:
-
-1. **Dashboard**: Visão geral dos dados de telemetria e estatísticas
-2. **Análise de Voltas**: Visualização detalhada de uma volta específica
-3. **Comparação de Voltas**: Comparação entre duas voltas para identificar diferenças
-4. **Setups de Carros**: Gerenciamento e visualização de setups otimizados
-5. **Configurações**: Personalização do aplicativo e conexão com simuladores
-
-A navegação entre as seções é feita através da barra lateral, que permanece visível em todas as telas.
-
-## Captura de Telemetria
-
-### Conexão com Simuladores
-
-O Race Telemetry Analyzer suporta captura de telemetria em tempo real dos seguintes simuladores:
-
-- **Assetto Corsa Competizione**: Captura via memória compartilhada
-- **Le Mans Ultimate**: Captura via plugin dedicado
-
-Para iniciar a captura:
-
-1. Inicie o simulador desejado
-2. Abra o Race Telemetry Analyzer
-3. Na seção Dashboard, clique em "Conectar"
-4. Selecione o simulador na lista
-5. Clique em "Iniciar Captura"
-
-O status da conexão será exibido na parte inferior da tela. Uma vez conectado, o aplicativo começará a capturar dados automaticamente durante suas voltas.
-
-### Importação de Arquivos de Telemetria
-
-Além da captura em tempo real, você pode importar arquivos de telemetria previamente salvos:
-
-1. Na seção Dashboard, clique em "Importar"
-2. Navegue até o arquivo de telemetria (.json, .csv ou formato nativo do simulador)
-3. Selecione o arquivo e clique em "Abrir"
-
-Os dados importados serão processados e disponibilizados para análise.
-
-## Análise de Voltas
-
-A seção de Análise de Voltas permite examinar detalhadamente os dados de uma volta específica.
-
-### Seleção de Volta
-
-1. No painel esquerdo, selecione a sessão desejada
-2. Escolha a volta que deseja analisar na lista
-3. Os dados da volta serão carregados automaticamente
-
-### Visualização de Dados
-
-A tela de análise apresenta:
-
-- **Mapa da Pista**: Visualização do traçado com código de cores para velocidade
-- **Gráfico de Velocidade**: Velocidade ao longo da volta
-- **Gráfico de Pedais**: Uso do acelerador e freio
-- **Gráfico de RPM**: Rotações do motor e pontos de troca de marcha
-- **Setores**: Tempos por setor e comparação com sua melhor volta
-
-### Ferramentas de Análise
-
-- **Zoom**: Use a roda do mouse para ampliar áreas específicas dos gráficos
-- **Seleção**: Clique e arraste para selecionar um trecho específico
-- **Pontos-chave**: Clique em um ponto do traçado para ver os dados exatos naquela posição
-- **Filtros**: Selecione quais dados deseja visualizar usando as caixas de seleção
-
-## Comparação de Voltas
-
-A funcionalidade de comparação é uma das mais poderosas do Race Telemetry Analyzer, permitindo identificar precisamente onde você pode melhorar.
-
-### Seleção de Voltas para Comparação
-
-1. Na seção Comparação de Voltas, selecione a "Volta de Referência" (geralmente sua melhor volta)
-2. Selecione a "Volta de Comparação" (a volta que deseja analisar)
-3. Clique em "Comparar Voltas"
-
-### Análise Comparativa
-
-A tela de comparação exibe:
-
-- **Delta de Tempo**: Diferença de tempo acumulada ao longo da volta
-- **Traçados Sobrepostos**: Visualização dos dois traçados no mapa da pista
-- **Gráficos Comparativos**: Velocidade, acelerador, freio e marcha das duas voltas
-- **Pontos de Melhoria**: Identificação automática de áreas onde você pode melhorar
-
-### Identificação de Pontos de Melhoria
-
-O Race Telemetry Analyzer identifica automaticamente pontos onde você pode melhorar:
-
-- **Frenagem**: Pontos onde você freia muito cedo, muito tarde ou com intensidade inadequada
-- **Aceleração**: Pontos onde você poderia acelerar mais cedo ou com mais intensidade
-- **Traçado**: Diferenças significativas no traçado que afetam o tempo
-- **Velocidade de Curva**: Pontos onde você perde velocidade desnecessariamente
-
-Cada ponto de melhoria é destacado no mapa e nos gráficos, com uma descrição detalhada do problema e sugestões para correção.
-
-## Gerenciamento de Setups
-
-A seção de Setups permite gerenciar configurações otimizadas para diferentes carros e pistas.
-
-### Setups Pré-configurados
-
-O Race Telemetry Analyzer inclui setups profissionais pré-configurados:
-
-- **Ford Mustang GT3 para Monza**: Setup otimizado para máxima velocidade nas retas longas de Monza
-- **McLaren 720S GT3 para Monza**: Setup balanceado com foco em estabilidade nas chicanes
-
-### Visualização de Setups
-
-1. Na seção Setups, selecione o carro e a pista desejados
-2. Clique em "Filtrar" para ver os setups disponíveis
-3. Selecione um setup para ver seus detalhes
-
-Os detalhes do setup incluem:
-
-- **Suspensão**: Altura, molas, amortecedores, barras estabilizadoras
-- **Aerodinâmica**: Configurações de asas e difusor
-- **Transmissão**: Relações de marcha e diferencial
-- **Pneus**: Pressões e compostos
-- **Notas**: Dicas específicas para utilizar o setup
-
-### Criação e Edição de Setups
-
-Para criar um novo setup:
-
-1. Clique em "Novo Setup"
-2. Preencha os dados básicos (carro, pista, autor)
-3. Configure os parâmetros técnicos
-4. Adicione notas e dicas
-5. Clique em "Salvar"
-
-Para editar um setup existente:
-
-1. Selecione o setup na lista
-2. Clique em "Editar"
-3. Faça as alterações necessárias
-4. Clique em "Salvar"
-
-## Dicas para Melhorar seus Tempos
-
-### Análise Sistemática
-
-1. **Compare com sua melhor volta**: Identifique onde você está perdendo tempo
-2. **Foque em um problema por vez**: Trabalhe em uma área específica até dominá-la
-3. **Analise setores separadamente**: Divida a pista em seções para análise detalhada
-
-### Interpretação dos Dados
-
-- **Delta negativo (verde)**: Você está ganhando tempo em relação à referência
-- **Delta positivo (vermelho)**: Você está perdendo tempo em relação à referência
-- **Traçado ideal**: Geralmente combina a maior velocidade possível com a menor distância
-
-### Técnicas Avançadas
-
-- **Sobreposição de pedais**: Analise onde os pilotos mais rápidos sobrepõem acelerador e freio
-- **Pontos de frenagem**: Identifique referências visuais para pontos de frenagem consistentes
-- **Progressão do acelerador**: Observe como os pilotos mais rápidos aplicam o acelerador na saída das curvas
-
-## Solução de Problemas
-
-### Problemas de Conexão
-
-Se o aplicativo não conseguir se conectar ao simulador:
-
-1. Verifique se o simulador está em execução
-2. Reinicie o Race Telemetry Analyzer
-3. Verifique se há atualizações disponíveis para o aplicativo ou simulador
-4. Desative temporariamente o antivírus ou firewall
-
-### Problemas de Desempenho
-
-Se o aplicativo estiver lento ou instável:
-
-1. Feche outros programas em execução
-2. Reduza a taxa de amostragem nas configurações
-3. Desative a captura em tempo real e trabalhe com dados importados
-
-### Suporte Técnico
-
-Para obter suporte adicional:
-
-- Consulte a documentação online em [www.racetelemetryanalyzer.com/support](http://www.racetelemetryanalyzer.com/support)
-- Entre em contato pelo e-mail support@racetelemetryanalyzer.com
-
-## Conclusão
-
-O Race Telemetry Analyzer é uma ferramenta poderosa para pilotos virtuais que desejam melhorar seu desempenho. Com análise detalhada de telemetria, comparação de voltas e identificação de pontos de melhoria, você terá todas as informações necessárias para reduzir seus tempos de volta e se tornar mais competitivo.
-
-Dedique tempo para explorar todas as funcionalidades do aplicativo e integre a análise de dados à sua rotina de treinos. Com prática e análise sistemática, você verá melhorias significativas em seu desempenho nas pistas virtuais.
-
-Boas corridas e tempos cada vez melhores!

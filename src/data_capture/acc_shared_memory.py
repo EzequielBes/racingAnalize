@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Implementação real da captura de telemetria para Assetto Corsa Competizione.
-Utiliza a memória compartilhada oficial do ACC para obter dados em tempo real.
+Implementação real da captura de telemetria para Assetto Corsa.
+Utiliza a memória compartilhada oficial do Assetto Corsa para obter dados em tempo real.
 """
 
 import os
@@ -137,7 +137,7 @@ def convert_ctypes_to_native(data):
         return repr(data)
 
 class ACCSharedMemoryReader:
-    """Classe para ler dados da memória compartilhada do Assetto Corsa Competizione."""
+    """Classe para ler dados da memória compartilhada do Assetto Corsa."""
 
     def __init__(self):
         """Inicializa o leitor de memória compartilhada do ACC."""
@@ -308,6 +308,79 @@ class ACCSharedMemoryReader:
         except Exception as e:
             logger.exception(f"Erro ao normalizar dados ACC para DataPoint: {e}")
             return None
+
+class ACCTelemetryCapture:
+    """Captura de telemetria em tempo real do Assetto Corsa via memória compartilhada."""
+
+    def __init__(self):
+        self.reader = ACCSharedMemoryReader()
+        self.is_connected = False
+        self.is_capturing = False
+        self.capture_thread = None
+        self.stop_event = threading.Event()
+        self.data_lock = threading.Lock()
+        self.telemetry_data = {"session": {}, "laps": []}
+        self.current_lap_points = []
+        self.last_lap = 0
+
+    def connect(self) -> bool:
+        self.is_connected = self.reader.connect()
+        if self.is_connected:
+            static = self.reader.static_data
+            self.telemetry_data["session"] = {
+                "track": getattr(static, "track", ""),
+                "car": getattr(static, "carModel", ""),
+                "player": getattr(static, "playerName", ""),
+            }
+        return self.is_connected
+
+    def disconnect(self) -> bool:
+        self.stop_capture()
+        self.reader.disconnect()
+        self.is_connected = False
+        return True
+
+    def start_capture(self) -> bool:
+        if not self.is_connected or self.is_capturing:
+            return False
+        self.stop_event.clear()
+        self.is_capturing = True
+        self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.capture_thread.start()
+        return True
+
+    def stop_capture(self) -> bool:
+        if not self.is_capturing:
+            return False
+        self.stop_event.set()
+        if self.capture_thread:
+            self.capture_thread.join(timeout=2.0)
+        self.is_capturing = False
+        return True
+
+    def get_telemetry_data(self):
+        with self.data_lock:
+            return copy.deepcopy(self.telemetry_data)
+
+    def _capture_loop(self):
+        while not self.stop_event.is_set():
+            raw = self.reader.read_data()
+            if raw:
+                dp = self.reader.normalize_to_datapoint(raw)
+                if dp:
+                    with self.data_lock:
+                        lap = raw["graphics"].get("completedLaps", 0)
+                        if lap != self.last_lap and self.current_lap_points:
+                            self.telemetry_data["laps"].append({
+                                "lap_number": self.last_lap,
+                                "lap_time": raw["graphics"].get("iLastTime", 0) / 1000.0,
+                                "sectors": [],
+                                "data_points": [p.__dict__ for p in self.current_lap_points]
+                            })
+                            self.current_lap_points = []
+                        self.current_lap_points.append(dp)
+                        self.last_lap = lap
+            time.sleep(0.05)
 
 # --- Exemplo de Uso (para teste direto do módulo) ---
 if __name__ == "__main__":

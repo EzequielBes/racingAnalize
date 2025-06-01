@@ -31,7 +31,7 @@ except ImportError:
     logger.warning("Módulo de captura ACC não encontrado.")
 
 try:
-    from src.data_capture.lmu_plugin import LMUTelemetryCapture
+    from src.data_capture.lmu_shared_memory import LMUTelemetryCapture
     lmu_available = True
 except ImportError:
     lmu_available = False

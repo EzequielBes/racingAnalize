@@ -145,7 +145,7 @@ class AnalysisWidget(QWidget):
         # Popula o ComboBox com as voltas disponíveis
         lap_items = []
         for i, lap in enumerate(session_data.laps):
-            lap_time_str = self._format_time(lap.lap_time)
+            lap_time_str = self._format_time(lap.lap_time_ms / 1000 if hasattr(lap, "lap_time_ms") else lap.lap_time if hasattr(lap, "lap_time") else 0)
             lap_items.append(f"Volta {lap.lap_number}: {lap_time_str}")
         
         self.lap_combo.addItems(lap_items)
@@ -181,13 +181,20 @@ class AnalysisWidget(QWidget):
         lap = self.current_lap_data
         points = lap.data_points
 
-        # Extrai dados para os eixos
         try:
-            distance = np.array([p.distance for p in points])
-            speed_kmh = np.array([p.speed * 3.6 for p in points]) # Converte m/s para km/h
-            throttle = np.array([p.inputs.get("throttle", 0) * 100 for p in points])
-            brake = np.array([p.inputs.get("brake", 0) * 100 for p in points])
-            steering = np.array([p.inputs.get("steering", 0) for p in points]) # Assume que já está em graus
+            # Suporte tanto para DataPoint (objeto) quanto dict (CSV puro)
+            def get_val(p, attr, default=0.0):
+                if hasattr(p, attr):
+                    return getattr(p, attr, default)
+                elif isinstance(p, dict):
+                    return p.get(attr, default)
+                return default
+
+            distance = np.array([get_val(p, "distance_m") for p in points])
+            speed_kmh = np.array([get_val(p, "speed_kmh") for p in points])
+            throttle = np.array([get_val(p, "throttle") * 100 for p in points])
+            brake = np.array([get_val(p, "brake") * 100 for p in points])
+            steering = np.array([get_val(p, "steer_angle") for p in points])
         except Exception as e:
             logger.error(f"Erro ao extrair dados da volta {lap.lap_number} para plotagem", exc_info=True)
             QMessageBox.critical(self, "Erro de Dados", f"Não foi possível processar os dados da volta {lap.lap_number} para os gráficos: {e}")
@@ -198,17 +205,15 @@ class AnalysisWidget(QWidget):
             self.plot_items["speed"].setData(distance, speed_kmh)
         if "throttle" in self.plot_items:
             self.plot_items["throttle"].setData(distance, throttle)
-            self.plot_items["throttle_plot"].setYRange(0, 105) # Garante range 0-100%
+            self.plot_items["throttle_plot"].setYRange(0, 105)
         if "brake" in self.plot_items:
             self.plot_items["brake"].setData(distance, brake)
             self.plot_items["brake_plot"].setYRange(0, 105)
         if "steering" in self.plot_items:
             self.plot_items["steering"].setData(distance, steering)
-            # Ajusta o range do volante dinamicamente ou usa um padrão
             max_steer = max(abs(steering.min()), abs(steering.max())) if steering.size > 0 else 270
             self.plot_items["steering_plot"].setYRange(-max_steer * 1.1, max_steer * 1.1)
 
-        # Ajusta o range X de todos os plots para a distância total da volta
         max_distance = distance[-1] if distance.size > 0 else 1
         for plot_id in self.plot_items:
             if plot_id.endswith("_plot"):
@@ -226,9 +231,15 @@ class AnalysisWidget(QWidget):
         points = lap.data_points
 
         try:
-            # Extrai coordenadas X, Z (ou Y dependendo do jogo) e velocidade
-            coords = np.array([[p.position[0], p.position[2]] for p in points if len(p.position) >= 3]) # Assume X, Z
-            speed_kmh = np.array([p.speed * 3.6 for p in points])
+            def get_val(p, attr, default=0.0):
+                if hasattr(p, attr):
+                    return getattr(p, attr, default)
+                elif isinstance(p, dict):
+                    return p.get(attr, default)
+                return default
+
+            coords = np.array([[get_val(p, "pos_x"), get_val(p, "pos_z")] for p in points])
+            speed_kmh = np.array([get_val(p, "speed_kmh") for p in points])
         except Exception as e:
             logger.error(f"Erro ao extrair coordenadas/velocidade da volta {lap.lap_number} para mapa 2D", exc_info=True)
             QMessageBox.critical(self, "Erro de Dados", f"Não foi possível processar os dados da volta {lap.lap_number} para o mapa 2D: {e}")
@@ -238,11 +249,8 @@ class AnalysisWidget(QWidget):
             logger.warning(f"Dados de coordenadas ou velocidade inválidos ou inconsistentes para a volta {lap.lap_number}.")
             return
 
-        # Define os pontos do traçado (usando os pontos da volta)
         self.track_view.set_track_points(coords.tolist())
-        # Define os pontos da volta e colore por velocidade
         self.track_view.set_lap_points(coords.tolist(), values=speed_kmh)
-        # Não define posição atual ou ponto destacado para análise estática
         self.track_view.update_current_position(None)
         self.track_view.highlight_point(None)
 
@@ -295,7 +303,7 @@ class AnalysisWidget(QWidget):
         # Encontra o índice do ponto de dados mais próximo da coordenada X
         lap = self.current_lap_data
         points = lap.data_points
-        distance_array = np.array([p.distance for p in points])
+        distance_array = np.array([p.distance_m for p in points])
         if distance_array.size == 0:
             return
             
@@ -308,15 +316,16 @@ class AnalysisWidget(QWidget):
         data_point = points[index]
 
         # Atualiza os textos com os valores do ponto
-        self._update_cursor_text("speed", data_point.speed * 3.6, "km/h")
-        self._update_cursor_text("throttle", data_point.inputs.get("throttle", 0) * 100, "%")
-        self._update_cursor_text("brake", data_point.inputs.get("brake", 0) * 100, "%")
-        self._update_cursor_text("steering", data_point.inputs.get("steering", 0), "°")
+        self._update_cursor_text("speed", data_point.speed_kmh, "km/h")
+        self._update_cursor_text("throttle", data_point.throttle * 100, "%")
+        self._update_cursor_text("brake", data_point.brake * 100, "%")
+        self._update_cursor_text("steering", data_point.steer_angle, "°")
 
-        # Destaca o ponto correspondente no mapa 2D
-        if len(data_point.position) >= 3:
-            map_point = [data_point.position[0], data_point.position[2]] # Assume X, Z
-            self.track_view.highlight_point(map_point)
+        # Destaca o ponto correspondente no mapa 2D usando pos_x/pos_z
+        pos_x = getattr(data_point, "pos_x", None)
+        pos_z = getattr(data_point, "pos_z", None)
+        if pos_x is not None and pos_z is not None:
+            self.track_view.highlight_point([pos_x, pos_z])
         else:
             self.track_view.highlight_point(None)
 
@@ -354,6 +363,46 @@ class AnalysisWidget(QWidget):
         seconds = int(time_seconds % 60)
         milliseconds = int((time_seconds % 1) * 1000)
         return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+class TrackViewWidget(QWidget):
+    """Widget para exibir o traçado da pista em 2D."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # ... inicialização existente ...
+        self._track_points = []
+        self._lap_points = []
+        self._lap_values = []
+        # Se desejar, adicione um canvas/plot aqui para desenhar
+
+    def set_track_points(self, points):
+        """Define os pontos do traçado da pista (lista de [x, y])."""
+        self._track_points = points
+        # Aqui você pode adicionar lógica para desenhar o traçado se desejar
+        # Exemplo: atualizar um plot/canvas, se implementado
+
+    def set_lap_points(self, points, values=None):
+        """Define os pontos da volta e valores para colorir (ex: velocidade)."""
+        self._lap_points = points
+        self._lap_values = values if values is not None else []
+        # Aqui você pode adicionar lógica para desenhar a volta colorida
+
+    def clear_view(self):
+        """Limpa a visualização do traçado da pista."""
+        self._track_points = []
+        self._lap_points = []
+        self._lap_values = []
+        # Limpe o canvas/plot se implementado
+
+    def highlight_point(self, idx):
+        """Destaca um ponto no mapa (ou limpa se idx=None)."""
+        # Implemente a lógica de destaque ou deixe vazio para não dar erro
+        pass
+
+    def update_current_position(self, pos):
+        """Atualiza a posição atual do carro no traçado (placeholder)."""
+        # Implemente a lógica de atualização visual se desejar
+        pass
 
 # Exemplo de uso (para teste isolado)
 if __name__ == '__main__':

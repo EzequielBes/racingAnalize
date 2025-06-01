@@ -97,50 +97,34 @@ class ComparisonWidget(QWidget):
         self.proxy = pg.SignalProxy(self.channels_plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self._mouse_moved)
         # self.channels_plot_widget.scene().sigMouseMoved.connect(self._mouse_moved) # Conexão direta se proxy não for usado
 
-    def load_processed_session(self, processed_data: Dict[str, Any], session_info: Any):
+    def load_processed_session(self, processed_session_data, session_info):
         """Carrega dados de uma sessão JÁ PROCESSADA pelo TelemetryProcessor."""
         logger.info("Carregando dados de sessão processada no ComparisonWidget.")
-        self.processed_session_data = processed_data
-        self.current_session_info = session_info # Guarda info básica
+        self.processed_session_data = processed_session_data
+        self.session_info = session_info
 
-        # Limpa seletores e plots antigos
+        valid_laps_processed = [lap for lap in self.processed_session_data.laps if lap.is_valid]
+        lap_numbers = sorted(lap.lap_number for lap in valid_laps_processed)
         self.lap1_selector.clear()
         self.lap2_selector.clear()
-        self._clear_plots()
-        self.compare_button.setEnabled(False)
-
-        if not self.processed_session_data or "laps" not in self.processed_session_data:
-            logger.warning("Dados processados inválidos ou sem voltas.")
-            QMessageBox.warning(self, "Dados Inválidos", "Os dados da sessão processada parecem inválidos ou não contêm voltas.")
-            return
-
-        valid_laps_processed = self.processed_session_data["laps"]
-        if not valid_laps_processed:
-             logger.warning("Nenhuma volta processada encontrada na sessão.")
-             QMessageBox.information(self, "Sem Voltas", "Nenhuma volta válida foi processada nesta sessão.")
-             return
-
-        # Preenche os QComboBox com os números das voltas processadas
-        lap_numbers = sorted(valid_laps_processed.keys())
         for lap_num in lap_numbers:
-            lap_time_ms = valid_laps_processed[lap_num].get("lap_time_ms", 0)
+            lap = next((l for l in valid_laps_processed if l.lap_number == lap_num), None)
+            lap_time_ms = lap.lap_time_ms if lap else 0
             lap_label = f"Volta {lap_num} ({lap_time_ms / 1000:.3f}s)"
-            # Adiciona o número da volta como dado associado ao item
             self.lap1_selector.addItem(lap_label, userData=lap_num)
             self.lap2_selector.addItem(lap_label, userData=lap_num)
-        
+
         if len(lap_numbers) >= 2:
-             self.compare_button.setEnabled(True)
-             # Seleciona as duas primeiras voltas por padrão, se possível
-             self.lap1_selector.setCurrentIndex(0)
-             self.lap2_selector.setCurrentIndex(1)
-             logger.info(f"{len(lap_numbers)} voltas válidas carregadas. Comparação habilitada.")
+            self.compare_button.setEnabled(True)
+            self.lap1_selector.setCurrentIndex(0)
+            self.lap2_selector.setCurrentIndex(1)
+            logger.info(f"{len(lap_numbers)} voltas válidas carregadas. Comparação habilitada.")
         elif len(lap_numbers) == 1:
-             self.lap1_selector.setCurrentIndex(0)
-             self.lap2_selector.setCurrentIndex(0)
-             logger.info("Apenas uma volta válida carregada. Comparação desabilitada.")
+            self.lap1_selector.setCurrentIndex(0)
+            self.lap2_selector.setCurrentIndex(0)
+            logger.info("Apenas uma volta válida carregada. Comparação desabilitada.")
         else:
-             logger.info("Nenhuma volta válida carregada.")
+            logger.info("Nenhuma volta válida carregada.")
 
     def run_comparison(self):
         """Executa a comparação com base nas voltas selecionadas."""
@@ -152,37 +136,34 @@ class ComparisonWidget(QWidget):
             return
 
         if lap1_num == lap2_num:
-             QMessageBox.warning(self, "Seleção Inválida", "Selecione duas voltas diferentes para comparar.")
-             return
+            QMessageBox.warning(self, "Seleção Inválida", "Selecione duas voltas diferentes para comparar.")
+            return
 
-        if not self.processed_session_data or "laps" not in self.processed_session_data:
-             QMessageBox.critical(self, "Erro Interno", "Dados da sessão processada não estão disponíveis.")
-             return
+        if not self.processed_session_data or not hasattr(self.processed_session_data, "laps"):
+            QMessageBox.critical(self, "Erro Interno", "Dados da sessão processada não estão disponíveis.")
+            return
 
         logger.info(f"Iniciando comparação entre Volta {lap1_num} e Volta {lap2_num}")
 
-        # Obter dados processados das voltas selecionadas
-        self.lap1_data_processed = self.processed_session_data["laps"].get(lap1_num)
-        self.lap2_data_processed = self.processed_session_data["laps"].get(lap2_num)
+        valid_laps_processed = [lap for lap in self.processed_session_data.laps if lap.is_valid]
+        lap1 = next((l for l in valid_laps_processed if l.lap_number == lap1_num), None)
+        lap2 = next((l for l in valid_laps_processed if l.lap_number == lap2_num), None)
 
-        if not self.lap1_data_processed or not self.lap2_data_processed:
-             logger.error(f"Dados processados não encontrados para as voltas {lap1_num} ou {lap2_num}.")
-             QMessageBox.critical(self, "Erro Interno", f"Não foi possível encontrar os dados processados para as voltas {lap1_num} ou {lap2_num}.")
-             return
+        if not lap1 or not lap2:
+            logger.error(f"Dados processados não encontrados para as voltas {lap1_num} ou {lap2_num}.")
+            QMessageBox.critical(self, "Erro Interno", f"Não foi possível encontrar os dados processados para as voltas {lap1_num} ou {lap2_num}.")
+            return
 
         try:
-            # Cria o comparador e executa a comparação
-            comparator = LapComparator(self.lap1_data_processed, self.lap2_data_processed)
+            comparator = LapComparator(lap1, lap2)
             self.comparison_results = comparator.compare_laps()
 
             if self.comparison_results:
                 logger.info("Comparação concluída. Atualizando plots.")
                 self._update_plots()
-                # Emitir sinal com os resultados, se necessário
-                # self.comparison_updated.emit(self.comparison_results)
             else:
-                 logger.error("Falha ao gerar resultados da comparação.")
-                 QMessageBox.critical(self, "Erro de Comparação", "Não foi possível gerar os resultados da comparação. Verifique os logs.")
+                logger.error("Falha ao gerar resultados da comparação.")
+                QMessageBox.critical(self, "Erro de Comparação", "Não foi possível gerar os resultados da comparação. Verifique os logs.")
 
         except Exception as e:
             logger.exception(f"Erro durante a comparação das voltas: {e}")
@@ -200,7 +181,6 @@ class ComparisonWidget(QWidget):
              self._clear_plots()
              return
 
-        # Limpa plots antigos antes de adicionar novos
         self._clear_plots()
 
         # Atualizar Plot de Traçado
@@ -223,7 +203,7 @@ class ComparisonWidget(QWidget):
         channels_data = self.comparison_results.get("channels", {})
         pens = [pg.mkPen("blue"), pg.mkPen("red"), pg.mkPen("cyan"), pg.mkPen("magenta"), pg.mkPen("yellow"), pg.mkPen("white")]
         pen_idx = 0
-        self.channels_plot_item.clear() # Limpa plots antigos do item
+        self.channels_plot_item.clear()
         self.channels_plot_item.addLegend()
         self.channel_plots.clear()
 
@@ -242,9 +222,9 @@ class ComparisonWidget(QWidget):
                     self.channel_plots[f"{channel_name}_lap2"] = plot2
                     pen_idx += 1
                 except Exception as e:
-                     logger.error(f"Erro ao plotar canal 	'{channel_name}	': {e}")
+                     logger.error(f"Erro ao plotar canal '{channel_name}': {e}")
             else:
-                 logger.warning(f"Dados do canal 	'{channel_name}	' inválidos ou com tamanho incorreto para plotagem.")
+                 logger.warning(f"Dados do canal '{channel_name}' inválidos ou com tamanho incorreto para plotagem.")
 
         # Atualizar Plot de Delta Time
         delta_time = self.comparison_results.get("delta_time_ms")

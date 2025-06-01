@@ -201,6 +201,11 @@ class CaptureManager:
                     self.is_capturing = True
                     self.start_time = time.time()
                     logger.info("Captura de telemetria iniciada com sucesso")
+                    # Limpa dados antigos ao iniciar nova captura
+                    self.telemetry_data = {
+                        "session": {},
+                        "laps": []
+                    }
                     return True
                 else:
                     logger.error("Falha ao iniciar captura de telemetria")
@@ -213,6 +218,10 @@ class CaptureManager:
             self.is_capturing = True
             self.start_time = time.time()
             logger.info("Captura de telemetria iniciada em modo de demonstração")
+            self.telemetry_data = {
+                "session": {},
+                "laps": []
+            }
             return True
     
     def stop_capture(self) -> bool:

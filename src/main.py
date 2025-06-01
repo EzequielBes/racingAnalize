@@ -463,25 +463,22 @@ class MainWindow(QMainWindow):
         event.accept() # Confirma o fechamento
 
 
-if __name__ == "__main__":
+def main():
+    """Função principal para inicializar a aplicação Race Telemetry Analyzer."""
     try:
         app = QApplication(sys.argv)
-        # Define uma fonte padrão mais agradável, se disponível
-        # font = QFont("Segoe UI", 9)
-        # if QFontDatabase.hasFamily("Segoe UI"): 
-        #     app.setFont(font)
-
         main_window = MainWindow()
         main_window.show()
         logger.info("Aplicação iniciada. Loop de eventos iniciado.")
         sys.exit(app.exec())
-
     except Exception as e:
         logger.critical("Erro fatal não tratado no nível da aplicação", exc_info=True)
         try:
-            # Tenta mostrar uma mensagem de erro final
             app_fallback = QApplication([])
             QMessageBox.critical(None, "Erro Fatal", f"Ocorreu um erro crítico e a aplicação será fechada:\n{e}")
         except Exception as final_e:
             print(f"Erro crítico irrecuperável: {e}, Erro ao exibir mensagem: {final_e}")
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()

@@ -17,7 +17,7 @@ from typing import Dict, Any, Optional
 from src.core.standard_data import TelemetrySession
 from src.data_acquisition.normalizer import TelemetryNormalizer
 # Importa os parsers específicos
-from src.data_acquisition.parsers import MotecParser # Adicionar outros parsers conforme necessário
+from src.data_acquisition.parsers import MotecParser, CSVParser # Adicionar outros parsers conforme necessário
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class TelemetryImporter:
             '.ld': 'motec',
             '.ldx': 'motec',
             '.ibt': 'ibt',
-            # '.csv': 'csv', # Implementar parser CSV se necessário
+            '.csv': 'csv',  # Agora aceita CSV
             # '.json': 'json' # Implementar parser JSON se necessário
         }
         logger.info("TelemetryImporter inicializado.")
@@ -65,15 +65,16 @@ class TelemetryImporter:
             raw_data = None
             # Chama o parser específico
             if format_type == 'motec':
-                parser = MotecParser() # <<< CORRIGIDO: Instancia o parser correto
-                raw_data = parser.parse(file_path) # <<< CORRIGIDO: Chama o método parse com o caminho
+                parser = MotecParser()
+                raw_data = parser.parse(file_path)
             elif format_type == 'ibt':
                 # parser = IBTParser(file_path) # Descomentar quando IBTParser estiver pronto
                 # raw_data = parser.parse()
                 logger.warning(f"Parser IBT ainda não implementado para {file_path}")
-                # Retorna None ou lança exceção específica?
-                return None # Por enquanto retorna None
-            # Adicionar elif para outros formatos (CSV, JSON, etc.)
+                return None
+            elif format_type == 'csv':
+                parser = CSVParser()
+                raw_data = parser.parse(file_path)
             else:
                 logger.error(f"Nenhum parser definido para o formato: {format_type}")
                 raise NotImplementedError(f"Parser não implementado para o formato: {format_type}")

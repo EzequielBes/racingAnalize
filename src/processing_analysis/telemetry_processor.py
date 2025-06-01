@@ -40,11 +40,9 @@ class TelemetryProcessor:
     def _process_lap(self, lap: LapData) -> Dict[str, Any]:
         """Processa os dados de uma única volta."""
         if not lap.data_points:
-            # Aqui, futuramente, carregaria de lap.data_points_ref se necessário
             logger.warning(f"Volta {lap.lap_number} sem data_points para processar.")
             return {}
 
-        # Converte data_points para DataFrame para facilitar cálculos
         df = pd.DataFrame([vars(p) for p in lap.data_points])
 
         if df.empty:
@@ -53,31 +51,26 @@ class TelemetryProcessor:
 
         processed = {}
 
-        # 1. Extração de Canais Essenciais (já estão no formato padronizado)
-        processed['timestamps_ms'] = df['timestamp_ms'].to_list()
-        processed['distance_m'] = df['distance_m'].to_list()
-        processed['speed_kmh'] = df['speed_kmh'].to_list()
-        processed['rpm'] = df['rpm'].to_list()
-        processed['gear'] = df['gear'].to_list()
-        processed['throttle'] = df['throttle'].to_list()
-        processed['brake'] = df['brake'].to_list()
-        processed['steer_angle'] = df['steer_angle'].to_list()
-        processed['clutch'] = df['clutch'].to_list()
+        # 1. Extração de Canais Essenciais (padronizado)
+        processed['timestamps_ms'] = df.get('timestamp_ms', pd.Series([0]*len(df))).to_list()
+        processed['distance_m'] = df.get('distance_m', pd.Series([0.0]*len(df))).to_list()
+        processed['speed_kmh'] = df.get('speed_kmh', pd.Series([0.0]*len(df))).to_list()
+        processed['rpm'] = df.get('rpm', pd.Series([0]*len(df))).to_list()
+        processed['gear'] = df.get('gear', pd.Series([0]*len(df))).to_list()
+        processed['throttle'] = df.get('throttle', pd.Series([0.0]*len(df))).to_list()
+        processed['brake'] = df.get('brake', pd.Series([0.0]*len(df))).to_list()
+        processed['steer_angle'] = df.get('steer_angle', pd.Series([0.0]*len(df))).to_list()
+        processed['clutch'] = df.get('clutch', pd.Series([0.0]*len(df))).to_list()
 
         # 2. Geração do Traçado do Piloto (X, Y)
-        processed['driver_trace_xy'] = list(zip(df['pos_x'], df['pos_y']))
+        processed['driver_trace_xy'] = list(zip(df.get('pos_x', pd.Series([0.0]*len(df))),
+                                                df.get('pos_y', pd.Series([0.0]*len(df)))))
 
         # 3. Cálculo de Velocidade em Curvas (Exemplo simples: velocidade mínima em segmentos)
-        #    Uma análise mais robusta exigiria detecção de curvas (mudança de heading/steer)
-        #    Por enquanto, podemos calcular a velocidade média/mínima por setor
         processed['sector_speeds'] = self._calculate_sector_speeds(df, lap.sector_times_ms)
 
-        # 4. Detecção de Voltas e Setores (Assumindo que já veio da camada de aquisição)
-        #    Se não viesse, implementaríamos aqui baseado em distance_m e track_data.sector_markers_m
         processed['lap_time_ms'] = lap.lap_time_ms
         processed['sector_times_ms'] = lap.sector_times_ms
-
-        # Adicionar outras análises conforme necessário
 
         return processed
 

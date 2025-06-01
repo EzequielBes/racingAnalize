@@ -1,730 +1,343 @@
-"""
-Widget de comparação de voltas para o Race Telemetry Analyzer.
-Permite comparar duas voltas e identificar diferenças de desempenho.
-"""
+# -*- coding: utf-8 -*-
+"""Widget para visualização e comparação interativa de voltas."""
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QComboBox, QSplitter, QFrame, QGroupBox, QGridLayout,
-    QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
-    QHeaderView
-)
-from PyQt6.QtGui import QIcon, QFont, QColor, QPalette, QPainter, QPen
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QSize, QRectF
-from typing import Dict, List, Any, Optional
+import logging
+from typing import List, Dict, Any, Optional
 
-import numpy as np
-import matplotlib
-matplotlib.use('Qt5Agg')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox
+from PyQt6.QtCore import pyqtSignal, Qt, QPointF
 
-from .track_view import TrackViewWidget
-from .telemetry_widget import TelemetryChart
+import pyqtgraph as pg
 
+from src.core.standard_data import TelemetrySession # Importa a estrutura completa
+from src.processing_analysis.telemetry_processor import TelemetryProcessor
+from src.processing_analysis.lap_comparator import LapComparator
 
-class LapSelector(QWidget):
-    """Widget para seleção de voltas."""
-    
-    lap_selected = pyqtSignal(dict)
-    
-    def __init__(self, title: str, parent=None):
-        """
-        Inicializa o seletor de voltas.
-        
-        Args:
-            title: Título do seletor
-            parent: Widget pai
-        """
-        super().__init__(parent)
-        
-        # Layout
-        layout = QVBoxLayout(self)
-        
-        # Título
-        title_label = QLabel(title)
-        title_label.setObjectName("section-title")
-        layout.addWidget(title_label)
-        
-        # Seleção de sessão
-        session_layout = QHBoxLayout()
-        session_layout.addWidget(QLabel("Sessão:"))
-        
-        self.session_combo = QComboBox()
-        self.session_combo.setMinimumWidth(200)
-        session_layout.addWidget(self.session_combo)
-        session_layout.addStretch()
-        
-        layout.addLayout(session_layout)
-        
-        # Seleção de volta
-        lap_layout = QHBoxLayout()
-        lap_layout.addWidget(QLabel("Volta:"))
-        
-        self.lap_combo = QComboBox()
-        self.lap_combo.setMinimumWidth(200)
-        lap_layout.addWidget(self.lap_combo)
-        lap_layout.addStretch()
-        
-        layout.addLayout(lap_layout)
-        
-        # Conecta sinais
-        self.session_combo.currentIndexChanged.connect(self._on_session_selected)
-        self.lap_combo.currentIndexChanged.connect(self._on_lap_selected)
-        
-        # Dados
-        self.sessions = []
-        self.current_session = None
-        self.laps = []
-    
-    def set_sessions(self, sessions: List[Dict[str, Any]]):
-        """
-        Define a lista de sessões disponíveis.
-        
-        Args:
-            sessions: Lista de dicionários com dados das sessões
-        """
-        self.sessions = sessions
-        
-        # Atualiza o combo box
-        self.session_combo.clear()
-        
-        for session in sessions:
-            session_name = f"{session.get('track', 'Desconhecido')} - {session.get('car', 'Desconhecido')}"
-            self.session_combo.addItem(session_name, session.get('id', ''))
-        
-        # Seleciona a primeira sessão
-        if self.session_combo.count() > 0:
-            self.session_combo.setCurrentIndex(0)
-    
-    def set_laps(self, laps: List[Dict[str, Any]]):
-        """
-        Define a lista de voltas disponíveis.
-        
-        Args:
-            laps: Lista de dicionários com dados das voltas
-        """
-        self.laps = laps
-        
-        # Atualiza o combo box
-        self.lap_combo.clear()
-        
-        for lap in laps:
-            lap_num = lap.get("lap_number", 0)
-            lap_time = lap.get("lap_time", 0)
-            
-            minutes = int(lap_time // 60)
-            seconds = int(lap_time % 60)
-            milliseconds = int((lap_time % 1) * 1000)
-            
-            lap_text = f"Volta {lap_num} - {minutes:02d}:{seconds:02d}.{milliseconds:03d}"
-            self.lap_combo.addItem(lap_text, lap_num)
-        
-        # Seleciona a melhor volta
-        best_lap_idx = 0
-        best_time = float('inf')
-        
-        for i, lap in enumerate(laps):
-            if lap.get("lap_time", float('inf')) < best_time:
-                best_time = lap.get("lap_time", float('inf'))
-                best_lap_idx = i
-        
-        if self.lap_combo.count() > 0:
-            self.lap_combo.setCurrentIndex(best_lap_idx)
-    
-    def get_selected_lap(self) -> Optional[Dict[str, Any]]:
-        """
-        Retorna a volta selecionada.
-        
-        Returns:
-            Dicionário com dados da volta ou None se nenhuma volta estiver selecionada
-        """
-        current_index = self.lap_combo.currentIndex()
-        if current_index >= 0 and current_index < len(self.laps):
-            return self.laps[current_index]
-        return None
-    
-    def _on_session_selected(self, index: int):
-        """
-        Manipula a seleção de uma sessão no combo box.
-        
-        Args:
-            index: Índice da sessão selecionada
-        """
-        if index >= 0 and index < len(self.sessions):
-            self.current_session = self.sessions[index]
-            # Aqui carregaríamos as voltas da sessão selecionada
-            # Por enquanto, vamos apenas limpar o combo de voltas
-            self.lap_combo.clear()
-    
-    def _on_lap_selected(self, index: int):
-        """
-        Manipula a seleção de uma volta no combo box.
-        
-        Args:
-            index: Índice da volta selecionada
-        """
-        if index >= 0 and index < len(self.laps):
-            self.lap_selected.emit(self.laps[index])
-
-
-class ComparisonResultsPanel(QFrame):
-    """Painel para exibir resultados da comparação entre voltas."""
-    
-    def __init__(self, parent=None):
-        """
-        Inicializa o painel de resultados de comparação.
-        
-        Args:
-            parent: Widget pai
-        """
-        super().__init__(parent)
-        
-        # Configuração do frame
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setFrameShadow(QFrame.Shadow.Raised)
-        
-        # Layout
-        layout = QVBoxLayout(self)
-        
-        # Título
-        title = QLabel("Resultados da Comparação")
-        title.setObjectName("section-title")
-        layout.addWidget(title)
-        
-        # Diferença de tempo
-        time_layout = QHBoxLayout()
-        time_layout.addWidget(QLabel("Diferença de Tempo:"))
-        
-        self.time_diff_label = QLabel("0.000s")
-        self.time_diff_label.setObjectName("metric-value")
-        time_layout.addWidget(self.time_diff_label)
-        time_layout.addStretch()
-        
-        layout.addLayout(time_layout)
-        
-        # Tabela de setores
-        layout.addWidget(QLabel("Setores:"))
-        
-        self.sectors_table = QTableWidget()
-        self.sectors_table.setColumnCount(4)
-        self.sectors_table.setHorizontalHeaderLabels(["Setor", "Referência", "Comparação", "Diferença"])
-        
-        # Ajusta o comportamento da tabela
-        self.sectors_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.sectors_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.sectors_table.setAlternatingRowColors(True)
-        
-        # Ajusta o tamanho das colunas
-        header = self.sectors_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        
-        layout.addWidget(self.sectors_table)
-        
-        # Tabela de pontos de melhoria
-        layout.addWidget(QLabel("Pontos de Melhoria:"))
-        
-        self.improvements_table = QTableWidget()
-        self.improvements_table.setColumnCount(4)
-        self.improvements_table.setHorizontalHeaderLabels(["Tipo", "Severidade", "Posição", "Sugestão"])
-        
-        # Ajusta o comportamento da tabela
-        self.improvements_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.improvements_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.improvements_table.setAlternatingRowColors(True)
-        
-        # Ajusta o tamanho das colunas
-        header = self.improvements_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        
-        layout.addWidget(self.improvements_table)
-    
-    def update_comparison_results(self, comparison_results: Dict[str, Any]):
-        """
-        Atualiza os resultados da comparação.
-        
-        Args:
-            comparison_results: Dicionário com resultados da comparação
-        """
-        if not comparison_results:
-            return
-        
-        # Diferença de tempo
-        time_delta = comparison_results.get("time_delta", 0)
-        sign = "+" if time_delta > 0 else ""
-        self.time_diff_label.setText(f"{sign}{time_delta:.3f}s")
-        
-        # Cor da diferença de tempo
-        if time_delta > 0:
-            self.time_diff_label.setStyleSheet("color: red;")
-        elif time_delta < 0:
-            self.time_diff_label.setStyleSheet("color: green;")
-        else:
-            self.time_diff_label.setStyleSheet("")
-        
-        # Setores
-        sectors = comparison_results.get("sectors", [])
-        
-        # Limpa a tabela
-        self.sectors_table.setRowCount(0)
-        
-        for sector in sectors:
-            row = self.sectors_table.rowCount()
-            self.sectors_table.insertRow(row)
-            
-            # Setor
-            self.sectors_table.setItem(row, 0, QTableWidgetItem(f"Setor {sector.get('sector', row+1)}"))
-            
-            # Referência
-            ref_time = sector.get("ref_time", 0)
-            self.sectors_table.setItem(row, 1, QTableWidgetItem(self._format_time(ref_time)))
-            
-            # Comparação
-            comp_time = sector.get("comp_time", 0)
-            self.sectors_table.setItem(row, 2, QTableWidgetItem(self._format_time(comp_time)))
-            
-            # Diferença
-            delta = sector.get("delta", 0)
-            sign = "+" if delta > 0 else ""
-            delta_item = QTableWidgetItem(f"{sign}{delta:.3f}s")
-            
-            if delta > 0:
-                delta_item.setForeground(QColor(255, 0, 0))  # Vermelho
-            elif delta < 0:
-                delta_item.setForeground(QColor(0, 255, 0))  # Verde
-            
-            self.sectors_table.setItem(row, 3, delta_item)
-        
-        # Pontos de melhoria
-        improvements = comparison_results.get("improvement_suggestions", [])
-        
-        # Limpa a tabela
-        self.improvements_table.setRowCount(0)
-        
-        for improvement in improvements:
-            row = self.improvements_table.rowCount()
-            self.improvements_table.insertRow(row)
-            
-            # Tipo
-            type_text = {
-                "braking": "Frenagem",
-                "apex": "Ápice",
-                "acceleration": "Aceleração",
-                "line": "Trajetória",
-                "speed": "Velocidade",
-                "loss": "Perda de Tempo",
-                "inconsistent_line": "Linha Inconsistente"
-            }.get(improvement.get("type", ""), improvement.get("type", ""))
-            
-            self.improvements_table.setItem(row, 0, QTableWidgetItem(type_text))
-            
-            # Severidade
-            severity_text = {
-                "low": "Baixa",
-                "medium": "Média",
-                "high": "Alta"
-            }.get(improvement.get("severity", ""), improvement.get("severity", ""))
-            
-            severity_item = QTableWidgetItem(severity_text)
-            
-            if improvement.get("severity") == "high":
-                severity_item.setForeground(QColor(255, 0, 0))  # Vermelho
-            elif improvement.get("severity") == "medium":
-                severity_item.setForeground(QColor(255, 165, 0))  # Laranja
-            
-            self.improvements_table.setItem(row, 1, severity_item)
-            
-            # Posição
-            position = improvement.get("position", [0, 0])
-            pos_text = f"({position[0]:.1f}, {position[1]:.1f})"
-            self.improvements_table.setItem(row, 2, QTableWidgetItem(pos_text))
-            
-            # Sugestão
-            self.improvements_table.setItem(row, 3, QTableWidgetItem(improvement.get("suggestion", "")))
-    
-    def _format_time(self, time_seconds: float) -> str:
-        """
-        Formata um tempo em segundos para o formato MM:SS.mmm.
-        
-        Args:
-            time_seconds: Tempo em segundos
-            
-        Returns:
-            String formatada
-        """
-        if time_seconds <= 0:
-            return "00:00.000"
-        
-        minutes = int(time_seconds // 60)
-        seconds = int(time_seconds % 60)
-        milliseconds = int((time_seconds % 1) * 1000)
-        
-        return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
-
+logger = logging.getLogger(__name__)
 
 class ComparisonWidget(QWidget):
-    """Widget principal de comparação de voltas."""
-    
+    """Widget para comparar duas voltas interativamente."""
+
+    # Sinal para indicar que uma nova comparação foi realizada (opcional)
+    # comparison_updated = pyqtSignal(dict)
+
     def __init__(self, parent=None):
-        """
-        Inicializa o widget de comparação.
-        
-        Args:
-            parent: Widget pai
-        """
         super().__init__(parent)
-        
-        # Layout principal
+        self.current_session: Optional[TelemetrySession] = None
+        self.processed_session_data: Optional[Dict[str, Any]] = None # Armazena dados processados pelo TelemetryProcessor
+        self.lap1_data_processed: Optional[Dict[str, Any]] = None
+        self.lap2_data_processed: Optional[Dict[str, Any]] = None
+        self.comparison_results: Optional[Dict[str, Any]] = None
+        self._setup_ui()
+        logger.info("ComparisonWidget inicializado.")
+
+    def _setup_ui(self):
+        """Configura a interface gráfica do widget."""
         layout = QVBoxLayout(self)
-        
-        # Seletores de voltas
-        selectors_layout = QHBoxLayout()
-        
-        self.reference_selector = LapSelector("Volta de Referência")
-        self.comparison_selector = LapSelector("Volta de Comparação")
-        
-        selectors_layout.addWidget(self.reference_selector)
-        selectors_layout.addWidget(self.comparison_selector)
-        
-        layout.addLayout(selectors_layout)
-        
-        # Botão de comparação
-        compare_layout = QHBoxLayout()
-        compare_layout.addStretch()
-        
+
+        # --- Controles --- 
+        control_layout = QHBoxLayout()
+        self.lap1_selector = QComboBox()
+        self.lap1_selector.setPlaceholderText("Selecione a Volta 1")
+        self.lap2_selector = QComboBox()
+        self.lap2_selector.setPlaceholderText("Selecione a Volta 2")
         self.compare_button = QPushButton("Comparar Voltas")
-        self.compare_button.setMinimumWidth(200)
-        compare_layout.addWidget(self.compare_button)
-        
-        compare_layout.addStretch()
-        
-        layout.addLayout(compare_layout)
-        
-        # Splitter principal
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Painel esquerdo: Visualização da pista
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Visualização da pista
-        self.track_view = TrackViewWidget()
-        left_layout.addWidget(self.track_view)
-        
-        # Painel direito: Resultados da comparação e gráficos
-        right_panel = QSplitter(Qt.Orientation.Vertical)
-        
-        # Resultados da comparação
-        self.results_panel = ComparisonResultsPanel()
-        
-        # Gráficos de comparação
-        charts_widget = QTabWidget()
-        
-        # Tab de delta de tempo
-        delta_tab = QWidget()
-        delta_layout = QVBoxLayout(delta_tab)
-        self.delta_chart = TelemetryChart()
-        delta_layout.addWidget(self.delta_chart)
-        charts_widget.addTab(delta_tab, "Delta de Tempo")
-        
-        # Tab de velocidade
-        speed_tab = QWidget()
-        speed_layout = QVBoxLayout(speed_tab)
-        self.speed_chart = TelemetryChart()
-        speed_layout.addWidget(self.speed_chart)
-        charts_widget.addTab(speed_tab, "Velocidade")
-        
-        # Tab de pedais
-        pedals_tab = QWidget()
-        pedals_layout = QVBoxLayout(pedals_tab)
-        self.pedals_chart = TelemetryChart()
-        pedals_layout.addWidget(self.pedals_chart)
-        charts_widget.addTab(pedals_tab, "Pedais")
-        
-        # Adiciona widgets ao splitter direito
-        right_panel.addWidget(self.results_panel)
-        right_panel.addWidget(charts_widget)
-        
-        # Define proporções iniciais do splitter direito
-        right_panel.setSizes([300, 400])
-        
-        # Adiciona painéis ao splitter principal
-        main_splitter.addWidget(left_panel)
-        main_splitter.addWidget(right_panel)
-        
-        # Define proporções iniciais do splitter principal
-        main_splitter.setSizes([400, 600])
-        
-        layout.addWidget(main_splitter)
-        
-        # Conecta sinais
-        self.compare_button.clicked.connect(self._compare_laps)
-        self.reference_selector.lap_selected.connect(self._on_reference_lap_selected)
-        self.comparison_selector.lap_selected.connect(self._on_comparison_lap_selected)
-        
-        # Estado
-        self.reference_lap = None
-        self.comparison_lap = None
-        self.comparison_results = None
-    
-    def add_reference_lap(self, telemetry_data: Dict[str, Any]):
-        """
-        Adiciona uma volta de referência.
-        
-        Args:
-            telemetry_data: Dicionário com dados de telemetria
-        """
-        # Extrai as voltas
-        laps = telemetry_data.get("laps", [])
-        
-        # Atualiza o seletor de voltas
-        self.reference_selector.set_laps(laps)
-        
-        # Atualiza o traçado da pista
-        track_points = []
-        for lap in laps:
-            for point in lap.get("data_points", []):
-                if "position" in point:
-                    track_points.append(point["position"])
-        
-        if track_points:
-            self.track_view.set_track_points(track_points)
-    
-    def add_comparison_lap(self, telemetry_data: Dict[str, Any]):
-        """
-        Adiciona uma volta de comparação.
-        
-        Args:
-            telemetry_data: Dicionário com dados de telemetria
-        """
-        # Extrai as voltas
-        laps = telemetry_data.get("laps", [])
-        
-        # Atualiza o seletor de voltas
-        self.comparison_selector.set_laps(laps)
-    
-    @pyqtSlot()
-    def refresh_data(self):
-        """Atualiza todos os dados do widget."""
-        # Recarrega as voltas selecionadas
-        reference_lap = self.reference_selector.get_selected_lap()
-        comparison_lap = self.comparison_selector.get_selected_lap()
-        
-        if reference_lap and comparison_lap:
-            self._compare_laps()
-    
-    def _on_reference_lap_selected(self, lap_data: Dict[str, Any]):
-        """
-        Manipula a seleção de uma volta de referência.
-        
-        Args:
-            lap_data: Dicionário com dados da volta
-        """
-        self.reference_lap = lap_data
-        
-        # Atualiza o traçado da volta
-        lap_points = []
-        for point in lap_data.get("data_points", []):
-            if "position" in point:
-                lap_points.append(point["position"])
-        
-        if lap_points:
-            self.track_view.set_lap_points(lap_points)
-    
-    def _on_comparison_lap_selected(self, lap_data: Dict[str, Any]):
-        """
-        Manipula a seleção de uma volta de comparação.
-        
-        Args:
-            lap_data: Dicionário com dados da volta
-        """
-        self.comparison_lap = lap_data
-    
-    def _compare_laps(self):
-        """Compara as voltas selecionadas."""
-        if not self.reference_lap or not self.comparison_lap:
+        self.compare_button.clicked.connect(self.run_comparison)
+        self.compare_button.setEnabled(False) # Desabilitado até carregar dados
+
+        control_layout.addWidget(QLabel("Volta 1:"))
+        control_layout.addWidget(self.lap1_selector)
+        control_layout.addWidget(QLabel("Volta 2:"))
+        control_layout.addWidget(self.lap2_selector)
+        control_layout.addWidget(self.compare_button)
+        layout.addLayout(control_layout)
+
+        # --- Área de Plots --- 
+        plot_layout = QVBoxLayout() # Usar QVBoxLayout para empilhar
+
+        # Plot 1: Mapa da Pista com Traçados Sobrepostos
+        self.track_plot_widget = pg.PlotWidget(title="Traçado da Pista")
+        self.track_plot_item = self.track_plot_widget.getPlotItem()
+        self.track_plot_item.setAspectLocked(True)
+        self.lap1_trace_plot = pg.PlotDataItem(pen=pg.mkPen("blue", width=2), name="Volta 1")
+        self.lap2_trace_plot = pg.PlotDataItem(pen=pg.mkPen("red", width=2), name="Volta 2")
+        self.track_plot_item.addItem(self.lap1_trace_plot)
+        self.track_plot_item.addItem(self.lap2_trace_plot)
+        self.track_plot_item.addLegend()
+        plot_layout.addWidget(self.track_plot_widget)
+
+        # Plot 2: Gráficos de Canais (Velocidade, Throttle, Brake, etc.) vs Distância
+        self.channels_plot_widget = pg.PlotWidget(title="Canais vs Distância")
+        self.channels_plot_item = self.channels_plot_widget.getPlotItem()
+        self.channels_plot_item.addLegend()
+        self.channel_plots = {} # Armazena os PlotDataItems dos canais
+        plot_layout.addWidget(self.channels_plot_widget)
+
+        # Plot 3: Gráfico de Delta Time vs Distância
+        self.delta_plot_widget = pg.PlotWidget(title="Delta Time (Volta 2 - Volta 1)")
+        self.delta_plot_item = self.delta_plot_widget.getPlotItem()
+        self.delta_time_plot = pg.PlotDataItem(pen=pg.mkPen("green", width=2))
+        self.delta_plot_item.addItem(self.delta_time_plot)
+        self.delta_plot_item.addLine(y=0, pen=pg.mkPen("gray", style=Qt.PenStyle.DashLine))
+        plot_layout.addWidget(self.delta_plot_widget)
+
+        layout.addLayout(plot_layout)
+
+        # --- Interatividade (Cursores Sincronizados) ---
+        # Linhas verticais para indicar posição
+        self.vLine_track = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("yellow", style=Qt.PenStyle.DashLine))
+        self.vLine_channels = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("yellow", style=Qt.PenStyle.DashLine))
+        self.vLine_delta = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("yellow", style=Qt.PenStyle.DashLine))
+        # Adiciona apenas aos plots de canais e delta por enquanto
+        self.channels_plot_widget.addItem(self.vLine_channels, ignoreBounds=True)
+        self.delta_plot_widget.addItem(self.vLine_delta, ignoreBounds=True)
+
+        # Conectar sinais de movimento do mouse para sincronizar cursores
+        # Usar proxy para limitar a taxa de atualização
+        self.proxy = pg.SignalProxy(self.channels_plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self._mouse_moved)
+        # self.channels_plot_widget.scene().sigMouseMoved.connect(self._mouse_moved) # Conexão direta se proxy não for usado
+
+    def load_processed_session(self, processed_data: Dict[str, Any], session_info: Any):
+        """Carrega dados de uma sessão JÁ PROCESSADA pelo TelemetryProcessor."""
+        logger.info("Carregando dados de sessão processada no ComparisonWidget.")
+        self.processed_session_data = processed_data
+        self.current_session_info = session_info # Guarda info básica
+
+        # Limpa seletores e plots antigos
+        self.lap1_selector.clear()
+        self.lap2_selector.clear()
+        self._clear_plots()
+        self.compare_button.setEnabled(False)
+
+        if not self.processed_session_data or "laps" not in self.processed_session_data:
+            logger.warning("Dados processados inválidos ou sem voltas.")
+            QMessageBox.warning(self, "Dados Inválidos", "Os dados da sessão processada parecem inválidos ou não contêm voltas.")
             return
+
+        valid_laps_processed = self.processed_session_data["laps"]
+        if not valid_laps_processed:
+             logger.warning("Nenhuma volta processada encontrada na sessão.")
+             QMessageBox.information(self, "Sem Voltas", "Nenhuma volta válida foi processada nesta sessão.")
+             return
+
+        # Preenche os QComboBox com os números das voltas processadas
+        lap_numbers = sorted(valid_laps_processed.keys())
+        for lap_num in lap_numbers:
+            lap_time_ms = valid_laps_processed[lap_num].get("lap_time_ms", 0)
+            lap_label = f"Volta {lap_num} ({lap_time_ms / 1000:.3f}s)"
+            # Adiciona o número da volta como dado associado ao item
+            self.lap1_selector.addItem(lap_label, userData=lap_num)
+            self.lap2_selector.addItem(lap_label, userData=lap_num)
         
-        # Aqui usaríamos o comparador de telemetria para obter os resultados
-        # Por enquanto, vamos simular alguns resultados
-        
-        # Diferença de tempo
-        time_delta = self.comparison_lap.get("lap_time", 0) - self.reference_lap.get("lap_time", 0)
-        
-        # Setores
-        sectors = []
-        ref_sectors = self.reference_lap.get("sectors", [])
-        comp_sectors = self.comparison_lap.get("sectors", [])
-        
-        for i in range(min(len(ref_sectors), len(comp_sectors))):
-            ref_sector = ref_sectors[i]
-            comp_sector = comp_sectors[i]
-            
-            delta = comp_sector.get("time", 0) - ref_sector.get("time", 0)
-            
-            sectors.append({
-                "sector": i + 1,
-                "ref_time": ref_sector.get("time", 0),
-                "comp_time": comp_sector.get("time", 0),
-                "delta": delta,
-                "percentage": (delta / ref_sector.get("time", 1)) * 100
-            })
-        
-        # Pontos de melhoria
-        improvements = []
-        
-        # Simula alguns pontos de melhoria
-        # Na implementação real, estes viriam do comparador de telemetria
-        
-        # Frenagem tardia
-        improvements.append({
-            "type": "braking",
-            "severity": "high",
-            "position": [100, 200],
-            "suggestion": "Frear mais cedo para manter mais velocidade na entrada da curva"
-        })
-        
-        # Ápice lento
-        improvements.append({
-            "type": "apex",
-            "severity": "medium",
-            "position": [150, 250],
-            "suggestion": "Ajustar trajetória para manter mais velocidade no ápice da curva"
-        })
-        
-        # Aceleração tardia
-        improvements.append({
-            "type": "acceleration",
-            "severity": "low",
-            "position": [200, 300],
-            "suggestion": "Antecipar a aceleração na saída da curva"
-        })
-        
-        # Monta o resultado da comparação
-        self.comparison_results = {
-            "reference_lap": self.reference_lap.get("lap_number", 0),
-            "comparison_lap": self.comparison_lap.get("lap_number", 0),
-            "time_delta": time_delta,
-            "sectors": sectors,
-            "improvement_suggestions": improvements
-        }
-        
-        # Atualiza a interface
-        self._update_comparison_ui()
-    
-    def _update_comparison_ui(self):
-        """Atualiza a interface com os resultados da comparação."""
+        if len(lap_numbers) >= 2:
+             self.compare_button.setEnabled(True)
+             # Seleciona as duas primeiras voltas por padrão, se possível
+             self.lap1_selector.setCurrentIndex(0)
+             self.lap2_selector.setCurrentIndex(1)
+             logger.info(f"{len(lap_numbers)} voltas válidas carregadas. Comparação habilitada.")
+        elif len(lap_numbers) == 1:
+             self.lap1_selector.setCurrentIndex(0)
+             self.lap2_selector.setCurrentIndex(0)
+             logger.info("Apenas uma volta válida carregada. Comparação desabilitada.")
+        else:
+             logger.info("Nenhuma volta válida carregada.")
+
+    def run_comparison(self):
+        """Executa a comparação com base nas voltas selecionadas."""
+        lap1_num = self.lap1_selector.currentData()
+        lap2_num = self.lap2_selector.currentData()
+
+        if lap1_num is None or lap2_num is None:
+            QMessageBox.warning(self, "Seleção Inválida", "Selecione duas voltas para comparar.")
+            return
+
+        if lap1_num == lap2_num:
+             QMessageBox.warning(self, "Seleção Inválida", "Selecione duas voltas diferentes para comparar.")
+             return
+
+        if not self.processed_session_data or "laps" not in self.processed_session_data:
+             QMessageBox.critical(self, "Erro Interno", "Dados da sessão processada não estão disponíveis.")
+             return
+
+        logger.info(f"Iniciando comparação entre Volta {lap1_num} e Volta {lap2_num}")
+
+        # Obter dados processados das voltas selecionadas
+        self.lap1_data_processed = self.processed_session_data["laps"].get(lap1_num)
+        self.lap2_data_processed = self.processed_session_data["laps"].get(lap2_num)
+
+        if not self.lap1_data_processed or not self.lap2_data_processed:
+             logger.error(f"Dados processados não encontrados para as voltas {lap1_num} ou {lap2_num}.")
+             QMessageBox.critical(self, "Erro Interno", f"Não foi possível encontrar os dados processados para as voltas {lap1_num} ou {lap2_num}.")
+             return
+
+        try:
+            # Cria o comparador e executa a comparação
+            comparator = LapComparator(self.lap1_data_processed, self.lap2_data_processed)
+            self.comparison_results = comparator.compare_laps()
+
+            if self.comparison_results:
+                logger.info("Comparação concluída. Atualizando plots.")
+                self._update_plots()
+                # Emitir sinal com os resultados, se necessário
+                # self.comparison_updated.emit(self.comparison_results)
+            else:
+                 logger.error("Falha ao gerar resultados da comparação.")
+                 QMessageBox.critical(self, "Erro de Comparação", "Não foi possível gerar os resultados da comparação. Verifique os logs.")
+
+        except Exception as e:
+            logger.exception(f"Erro durante a comparação das voltas: {e}")
+            QMessageBox.critical(self, "Erro de Comparação", f"Ocorreu um erro ao comparar as voltas:\n{e}\nVerifique os logs para detalhes.")
+
+    def _update_plots(self):
+        """Atualiza os gráficos com os resultados da comparação."""
         if not self.comparison_results:
+            self._clear_plots()
             return
-        
-        # Atualiza o painel de resultados
-        self.results_panel.update_comparison_results(self.comparison_results)
-        
-        # Atualiza os gráficos
-        self._update_charts()
-        
-        # Atualiza o traçado
-        self._update_track_view()
-    
-    def _update_charts(self):
-        """Atualiza os gráficos com os dados da comparação."""
-        if not self.reference_lap or not self.comparison_lap:
+
+        common_distance = self.comparison_results.get("common_distance")
+        if not common_distance or len(common_distance) == 0:
+             logger.warning("Distância comum inválida ou vazia nos resultados.")
+             self._clear_plots()
+             return
+
+        # Limpa plots antigos antes de adicionar novos
+        self._clear_plots()
+
+        # Atualizar Plot de Traçado
+        trace1 = self.comparison_results.get("traces", {}).get("lap1_xy")
+        trace2 = self.comparison_results.get("traces", {}).get("lap2_xy")
+        if trace1:
+            try:
+                x1, y1 = zip(*trace1)
+                self.lap1_trace_plot.setData(x=list(x1), y=list(y1))
+            except Exception as e:
+                 logger.error(f"Erro ao plotar traçado da volta 1: {e}")
+        if trace2:
+            try:
+                x2, y2 = zip(*trace2)
+                self.lap2_trace_plot.setData(x=list(x2), y=list(y2))
+            except Exception as e:
+                 logger.error(f"Erro ao plotar traçado da volta 2: {e}")
+
+        # Atualizar Plot de Canais
+        channels_data = self.comparison_results.get("channels", {})
+        pens = [pg.mkPen("blue"), pg.mkPen("red"), pg.mkPen("cyan"), pg.mkPen("magenta"), pg.mkPen("yellow"), pg.mkPen("white")]
+        pen_idx = 0
+        self.channels_plot_item.clear() # Limpa plots antigos do item
+        self.channels_plot_item.addLegend()
+        self.channel_plots.clear()
+
+        for channel_name, data in channels_data.items():
+            lap1_values = data.get("lap1")
+            lap2_values = data.get("lap2")
+            if lap1_values and lap2_values and len(lap1_values) == len(common_distance) and len(lap2_values) == len(common_distance):
+                try:
+                    pen1 = pens[pen_idx % len(pens)]
+                    plot1 = self.channels_plot_item.plot(common_distance, lap1_values, pen=pen1, name=f"{channel_name} V1")
+                    self.channel_plots[f"{channel_name}_lap1"] = plot1
+                    pen_idx += 1
+
+                    pen2 = pens[pen_idx % len(pens)]
+                    plot2 = self.channels_plot_item.plot(common_distance, lap2_values, pen=pen2, name=f"{channel_name} V2")
+                    self.channel_plots[f"{channel_name}_lap2"] = plot2
+                    pen_idx += 1
+                except Exception as e:
+                     logger.error(f"Erro ao plotar canal 	'{channel_name}	': {e}")
+            else:
+                 logger.warning(f"Dados do canal 	'{channel_name}	' inválidos ou com tamanho incorreto para plotagem.")
+
+        # Atualizar Plot de Delta Time
+        delta_time = self.comparison_results.get("delta_time_ms")
+        if delta_time and len(delta_time) == len(common_distance):
+            try:
+                self.delta_time_plot.setData(x=common_distance, y=delta_time)
+            except Exception as e:
+                 logger.error(f"Erro ao plotar delta time: {e}")
+        else:
+             logger.warning("Dados de delta time inválidos ou com tamanho incorreto.")
+             self.delta_time_plot.clear()
+
+    def _clear_plots(self):
+         """Limpa todos os dados dos plots."""
+         self.lap1_trace_plot.clear()
+         self.lap2_trace_plot.clear()
+         # Limpa os itens do plot de canais e o dicionário de referência
+         if hasattr(self, 'channels_plot_item'):
+              self.channels_plot_item.clear()
+              self.channels_plot_item.addLegend() # Readiciona a legenda
+         self.channel_plots.clear()
+         self.delta_time_plot.clear()
+         logger.debug("Plots de comparação limpos.")
+
+    def _mouse_moved(self, event):
+        """Callback para movimento do mouse sobre os plots (para cursor sincronizado)."""
+        # Obtém a posição do mouse na cena do plot de canais
+        pos_tuple = event # O evento pode ser uma tupla (x, y) ou QPointF dependendo da versão/config
+        # Garante que temos um QPointF para o método contains
+        if isinstance(pos_tuple, tuple) and len(pos_tuple) == 2:
+            pos_qpoint = QPointF(pos_tuple[0], pos_tuple[1])
+        elif isinstance(pos_tuple, QPointF):
+            pos_qpoint = pos_tuple
+        else:
+            # Se o formato for inesperado, ignora o evento
             return
-        
-        # Gráfico de delta de tempo
-        # Na implementação real, estes dados viriam do comparador de telemetria
-        # Por enquanto, vamos simular um delta
-        
-        ref_points = self.reference_lap.get("data_points", [])
-        comp_points = self.comparison_lap.get("data_points", [])
-        
-        if ref_points and comp_points:
-            # Simula um delta de tempo
-            distances = [p.get("distance", 0) for p in ref_points]
-            delta_times = np.random.normal(0, 0.1, len(distances))  # Simula um delta aleatório
-            delta_times = np.cumsum(delta_times)  # Acumula para simular tendência
-            
-            # Plota o delta
-            self.delta_chart.plot_data(distances, delta_times, "Delta de Tempo", "blue")
-            self.delta_chart.set_labels("Distância (m)", "Delta (s)", "Delta de Tempo")
-            
-            # Adiciona linha de referência (zero)
-            self.delta_chart.axes.axhline(y=0, color='r', linestyle='-', alpha=0.3)
-            self.delta_chart.draw()
-        
-        # Gráfico de velocidade
-        if ref_points and comp_points:
-            # Extrai dados para os gráficos
-            ref_distances = [p.get("distance", 0) for p in ref_points]
-            ref_speeds = [p.get("speed", 0) for p in ref_points]
-            
-            comp_distances = [p.get("distance", 0) for p in comp_points]
-            comp_speeds = [p.get("speed", 0) for p in comp_points]
-            
-            # Plota as velocidades
-            self.speed_chart.plot_data(ref_distances, ref_speeds, "Referência", "blue")
-            self.speed_chart.add_series(comp_distances, comp_speeds, "Comparação", "red")
-            self.speed_chart.set_labels("Distância (m)", "Velocidade (km/h)", "Comparação de Velocidade")
-        
-        # Gráfico de pedais
-        if ref_points and comp_points:
-            # Extrai dados para os gráficos
-            ref_distances = [p.get("distance", 0) for p in ref_points]
-            ref_throttles = [p.get("throttle", 0) * 100 for p in ref_points if "throttle" in p]  # Converte para porcentagem
-            ref_brakes = [p.get("brake", 0) * 100 for p in ref_points if "brake" in p]  # Converte para porcentagem
-            
-            comp_distances = [p.get("distance", 0) for p in comp_points]
-            comp_throttles = [p.get("throttle", 0) * 100 for p in comp_points if "throttle" in p]
-            comp_brakes = [p.get("brake", 0) * 100 for p in comp_points if "brake" in p]
-            
-            # Garante que os arrays tenham o mesmo tamanho
-            min_len = min(len(ref_distances), len(ref_throttles), len(ref_brakes))
-            ref_distances = ref_distances[:min_len]
-            ref_throttles = ref_throttles[:min_len]
-            ref_brakes = ref_brakes[:min_len]
-            
-            min_len = min(len(comp_distances), len(comp_throttles), len(comp_brakes))
-            comp_distances = comp_distances[:min_len]
-            comp_throttles = comp_throttles[:min_len]
-            comp_brakes = comp_brakes[:min_len]
-            
-            # Plota os pedais
-            self.pedals_chart.plot_data(ref_distances, ref_throttles, "Acelerador (Ref)", "green")
-            self.pedals_chart.add_series(ref_distances, ref_brakes, "Freio (Ref)", "red")
-            self.pedals_chart.add_series(comp_distances, comp_throttles, "Acelerador (Comp)", "lightgreen")
-            self.pedals_chart.add_series(comp_distances, comp_brakes, "Freio (Comp)", "pink")
-            self.pedals_chart.set_labels("Distância (m)", "Porcentagem (%)", "Comparação de Pedais")
-    
-    def _update_track_view(self):
-        """Atualiza a visualização do traçado com os dados da comparação."""
-        if not self.reference_lap or not self.comparison_lap:
-            return
-        
-        # Extrai os pontos das voltas
-        ref_points = []
-        for point in self.reference_lap.get("data_points", []):
-            if "position" in point:
-                ref_points.append(point["position"])
-        
-        comp_points = []
-        for point in self.comparison_lap.get("data_points", []):
-            if "position" in point:
-                comp_points.append(point["position"])
-        
-        # Atualiza o traçado
-        if ref_points:
-            self.track_view.set_lap_points(ref_points)
-        
-        # Destaca pontos de melhoria
-        if self.comparison_results and "improvement_suggestions" in self.comparison_results:
-            for suggestion in self.comparison_results["improvement_suggestions"]:
-                if "position" in suggestion:
-                    self.track_view.highlight_point(suggestion["position"])
+
+        if self.channels_plot_widget.sceneBoundingRect().contains(pos_qpoint):
+            # Mapeia a posição da cena para as coordenadas da vista (dados)
+            mouse_point = self.channels_plot_item.vb.mapSceneToView(pos_qpoint)
+            x_pos = mouse_point.x() # Coordenada X (geralmente distância)
+
+            # Atualiza a posição das linhas verticais nos plots de canais e delta
+            self.vLine_channels.setPos(x_pos)
+            self.vLine_delta.setPos(x_pos)
+
+            # TODO: Atualizar a linha/marcador no plot de traçado
+            # Isso requer encontrar o índice correspondente à distância x_pos
+            # e depois obter as coordenadas X, Y daquele índice.
+            # Exemplo:
+            # if self.comparison_results and 'common_distance' in self.comparison_results:
+            #     common_distance = np.array(self.comparison_results['common_distance'])
+            #     index = np.abs(common_distance - x_pos).argmin() # Encontra índice mais próximo
+            #     if 'traces' in self.comparison_results:
+            #         trace1 = self.comparison_results['traces'].get('lap1_xy')
+            #         if trace1 and index < len(trace1):
+            #             track_x, track_y = trace1[index]
+            #             # Atualizar um marcador em vez de uma linha infinita pode ser melhor
+            #             # self.vLine_track.setPos(track_x) # Não funciona bem com linha infinita
+            #             # Exemplo com marcador (requer criar o marcador em _setup_ui):
+            #             # self.track_marker.setData(pos=[(track_x, track_y)])
+
+# Para teste local (requer ambiente gráfico e dados mock)
+# if __name__ == '__main__':
+#     import sys
+#     app = QApplication(sys.argv)
+#
+#     # Criar mock session data (já processada)
+#     mock_processed_data = {
+#         "laps": {
+#             1: {
+#                 'lap_number': 1, 'lap_time_ms': 90000,
+#                 'distance_m': list(np.linspace(0, 4000, 100)),
+#                 'timestamps_ms': list(np.linspace(0, 90000, 100)),
+#                 'speed_kmh': list(150 + 50 * np.sin(np.linspace(0, 2 * np.pi, 100))),
+#                 'throttle': list(np.random.rand(100)), 'brake': list(np.random.rand(100) * 0.5),
+#                 'driver_trace_xy': list(zip(np.linspace(0, 1000, 100), 100 * np.sin(np.linspace(0, 4 * np.pi, 100))))
+#             },
+#             2: {
+#                 'lap_number': 2, 'lap_time_ms': 92000,
+#                 'distance_m': list(np.linspace(0, 4000, 110)), # Volta ligeiramente diferente
+#                 'timestamps_ms': list(np.linspace(0, 92000, 110)),
+#                 'speed_kmh': list(145 + 55 * np.sin(np.linspace(0, 2 * np.pi, 110))),
+#                 'throttle': list(np.random.rand(110)), 'brake': list(np.random.rand(110) * 0.6),
+#                 'driver_trace_xy': list(zip(np.linspace(0, 1000, 110), 110 * np.sin(np.linspace(0, 4 * np.pi, 110) + 0.1)))
+#             }
+#         }
+#     }
+#     mock_session_info = {'game': 'Mock', 'track': 'MockTrack'}
+#
+#     widget = ComparisonWidget()
+#     widget.load_processed_session(mock_processed_data, mock_session_info)
+#     widget.show()
+#     widget.run_comparison() # Roda a comparação inicial
+#     sys.exit(app.exec())
+

@@ -53,8 +53,9 @@ class SetupCard(QFrame):
         car_label.setFont(font)
         layout.addWidget(car_label)
         
-        layout.addWidget(QLabel(f"Pista: {setup_data.get("track", "Desconhecida")}"))
-        layout.addWidget(QLabel(f"Autor: {setup_data.get("author", "Desconhecido")}"))
+        # CORRIGIDO: Usar aspas simples dentro da f-string
+        layout.addWidget(QLabel(f"Pista: {setup_data.get('track', 'Desconhecida')}"))
+        layout.addWidget(QLabel(f"Autor: {setup_data.get('author', 'Desconhecido')}"))
         
         date_str = setup_data.get("date", "")
         if isinstance(date_str, str) and date_str:
@@ -91,7 +92,7 @@ class SetupCard(QFrame):
             self._update_display()
             # Emite o sinal para o widget pai salvar/atualizar
             self.setup_edited.emit(updated_data)
-            logger.info(f"Setup editado: {updated_data.get("id")}")
+            logger.info(f"Setup editado: {updated_data.get('id')}")
 
     def _update_display(self):
          # Atualiza os labels do card com os novos dados
@@ -105,7 +106,7 @@ class SetupCard(QFrame):
     def _on_export_clicked(self):
         # Pede apenas o caminho ao usuário
         file_dialog = QFileDialog()
-        default_filename = f"{self.setup_data.get("car", "setup").replace(" ", "_")}_{self.setup_data.get("track", "track").replace(" ", "_")}.json"
+        default_filename = f"{self.setup_data.get('car', 'setup').replace(' ', '_')}_{self.setup_data.get('track', 'track').replace(' ', '_')}.json"
         # Sugere o diretório padrão de setups
         setups_dir = os.path.join(os.path.expanduser("~"), "RaceTelemetryAnalyzer", "setups")
         default_path = os.path.join(setups_dir, default_filename)
@@ -222,7 +223,7 @@ class SetupDetailPanel(QFrame):
             return
         
         file_dialog = QFileDialog()
-        default_filename = f"{self.current_setup.get("car", "setup").replace(" ", "_")}_{self.current_setup.get("track", "track").replace(" ", "_")}.json"
+        default_filename = f"{self.current_setup.get('car', 'setup').replace(' ', '_')}_{self.current_setup.get('track', 'track').replace(' ', '_')}.json"
         setups_dir = os.path.join(os.path.expanduser("~"), "RaceTelemetryAnalyzer", "setups")
         default_path = os.path.join(setups_dir, default_filename)
 
@@ -392,187 +393,139 @@ class SetupWidget(QWidget):
         self.detail_panel = SetupDetailPanel()
         splitter.addWidget(self.detail_panel)
         
-        # Configura tamanho inicial do splitter
-        splitter.setSizes([400, 600])
+        # Conexões
+        self.new_setup_button.clicked.connect(self.create_new_setup)
+        self.import_setup_button.clicked.connect(self.import_setup_file)
+        self.detail_panel.export_requested.connect(self.save_setup_to_file)
         
-        # Conecta sinais
-        self.new_setup_button.clicked.connect(self._on_new_setup)
-        self.import_setup_button.clicked.connect(self._on_import_setup)
-        self.detail_panel.export_requested.connect(self._handle_setup_exported) # Conecta sinal do painel de detalhes
-        
-        # Carrega setups iniciais
-        self._load_setups()
-    
-    def _load_setups(self):
-        """Carrega setups do diretório padrão."""
+        # Carrega setups existentes
+        self.load_setups()
+
+    def load_setups(self):
+        """Carrega setups do diretório padrão e atualiza a lista de cards."""
+        logger.info(f"Carregando setups de: {self.setups_dir}")
         # Limpa cards existentes
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        self.all_setups = []
         cars = set()
         tracks = set()
         
-        try:
-            for filename in os.listdir(self.setups_dir):
-                if filename.endswith(".json"):
-                    file_path = os.path.join(self.setups_dir, filename)
-                    try:
-                        with open(file_path, "r") as f:
-                            setup_data = json.load(f)
-                            # Garante que o setup tenha um ID
-                            if "id" not in setup_data:
-                                 setup_data["id"] = f"setup_{os.path.splitext(filename)[0]}"
-                            self.all_setups.append(setup_data)
-                            cars.add(setup_data.get("car", "Desconhecido"))
-                            tracks.add(setup_data.get("track", "Desconhecida"))
-                            self._add_setup_card(setup_data)
-                    except json.JSONDecodeError:
-                        logger.error(f"Erro ao decodificar JSON: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Erro ao carregar setup {file_path}: {e}")
-        except FileNotFoundError:
-             logger.warning(f"Diretório de setups não encontrado: {self.setups_dir}")
-        except Exception as e:
-             logger.error(f"Erro ao listar diretório de setups: {e}")
-
+        for filename in os.listdir(self.setups_dir):
+            if filename.endswith(".json"):
+                file_path = os.path.join(self.setups_dir, filename)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        setup_data = json.load(f)
+                        # Adiciona ID se não existir (para compatibilidade)
+                        if "id" not in setup_data:
+                            setup_data["id"] = filename.replace(".json", "")
+                        
+                        self.add_setup_card(setup_data)
+                        cars.add(setup_data.get("car", "Desconhecido"))
+                        tracks.add(setup_data.get("track", "Desconhecida"))
+                except json.JSONDecodeError:
+                    logger.error(f"Erro ao decodificar JSON: {file_path}")
+                except Exception as e:
+                    logger.error(f"Erro ao carregar setup {file_path}: {e}")
+        
         # Atualiza filtros (exemplo)
         self.car_filter_combo.clear()
         self.car_filter_combo.addItem("Todos")
         self.car_filter_combo.addItems(sorted(list(cars)))
         # TODO: Atualizar filtro de pista
+        
+        logger.info(f"{self.cards_layout.count()} setups carregados.")
 
-    def _add_setup_card(self, setup_data: Dict[str, Any]):
+    def add_setup_card(self, setup_data: Dict[str, Any]):
         """Adiciona um card de setup ao layout."""
         card = SetupCard(setup_data)
         card.setup_selected.connect(self.detail_panel.update_setup_details)
-        card.setup_exported.connect(self._handle_setup_exported) # Conecta sinal do card
-        card.setup_edited.connect(self._handle_setup_edited) # Conecta sinal de edição
+        card.setup_exported.connect(self.save_setup_to_file)
+        card.setup_edited.connect(self.save_setup_to_file) # Salva automaticamente após editar
         self.cards_layout.addWidget(card)
 
-    def _handle_setup_exported(self, setup_data: Dict[str, Any], file_path: str):
-        """Salva o setup no caminho especificado pelo usuário."""
-        try:
-            # Garante que o diretório de destino exista
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            # Salva o setup no arquivo
-            with open(file_path, "w") as f:
-                json.dump(setup_data, f, indent=2)
-            
-            QMessageBox.information(
-                self,
-                "Exportação Concluída",
-                f"Setup exportado com sucesso para:\n{file_path}"
-            )
-            logger.info(f"Setup exportado para: {file_path}")
-        except Exception as e:
-            logger.error(f"Erro ao exportar setup para {file_path}: {e}")
-            QMessageBox.critical(
-                self,
-                "Erro de Exportação",
-                f"Ocorreu um erro ao exportar o setup:\n\n{str(e)}"
-            )
-
-    def _handle_setup_edited(self, updated_setup_data: Dict[str, Any]):
-        """Salva o setup editado no diretório padrão."""
-        self._save_setup(updated_setup_data)
-        # Recarrega a lista para refletir a mudança (poderia ser mais otimizado)
-        self._load_setups() 
-        # Atualiza o painel de detalhes se o setup editado estiver selecionado
-        if self.detail_panel.current_setup and self.detail_panel.current_setup.get("id") == updated_setup_data.get("id"):
-             self.detail_panel.update_setup_details(updated_setup_data)
-
-    def _save_setup(self, setup_data: Dict[str, Any]):
-        """Salva um setup no diretório padrão."""
-        if "id" not in setup_data:
-            logger.error("Tentativa de salvar setup sem ID.")
-            return
-            
-        # Usa o ID como nome do arquivo para garantir unicidade
-        file_name = f"{setup_data["id"]}.json"
-        file_path = os.path.join(self.setups_dir, file_name)
-        
-        try:
-            # Garante que o diretório exista (redundante se _load_setups funcionou)
-            os.makedirs(self.setups_dir, exist_ok=True)
-            
-            with open(file_path, "w") as f:
-                json.dump(setup_data, f, indent=2)
-            logger.info(f"Setup salvo/atualizado em: {file_path}")
-        except Exception as e:
-            logger.error(f"Erro ao salvar setup {file_path}: {e}")
-            QMessageBox.critical(
-                self,
-                "Erro ao Salvar",
-                f"Ocorreu um erro ao salvar o setup:\n\n{str(e)}"
-            )
-
-    def _on_new_setup(self):
+    def create_new_setup(self):
         """Abre o diálogo para criar um novo setup."""
-        dialog = SetupEditDialog(None, self) # Passa None para indicar novo setup
+        dialog = SetupEditDialog(parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_setup_data = dialog.get_setup_data()
-            self._save_setup(new_setup_data)
-            self._load_setups() # Recarrega a lista
-            logger.info(f"Novo setup criado: {new_setup_data.get("id")}")
+            self.save_setup_to_file(new_setup_data)
+            self.add_setup_card(new_setup_data) # Adiciona o novo card à lista
+            logger.info(f"Novo setup criado e salvo: {new_setup_data.get('id')}")
 
-    def _on_import_setup(self):
-        """Abre o diálogo para importar um setup."""
-        file_dialog = QFileDialog()
-        file_path, _ = file_dialog.getOpenFileName(
+    def import_setup_file(self):
+        """Abre um diálogo para importar um arquivo de setup JSON."""
+        file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Importar Setup",
             self.setups_dir, # Começa no diretório padrão
             "Arquivos JSON (*.json);;Todos os Arquivos (*)"
         )
         
-        if file_path:
-            try:
-                with open(file_path, "r") as f:
-                    imported_data = json.load(f)
-                
-                # Validação básica do setup importado
-                if not isinstance(imported_data, dict) or "car" not in imported_data or "track" not in imported_data:
-                    raise ValueError("Arquivo JSON inválido ou não contém dados de setup esperados.")
-                
-                # Gera novo ID para evitar conflitos
-                timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
-                imported_data["id"] = f"setup_imported_{timestamp}"
-                imported_data["date"] = datetime.now().isoformat() # Atualiza data
-                
-                # Salva o setup importado no diretório padrão
-                self._save_setup(imported_data)
-                self._load_setups() # Recarrega a lista
-                
-                QMessageBox.information(
-                    self,
-                    "Importação Concluída",
-                    f"Setup importado com sucesso de:\n{file_path}"
-                )
-                logger.info(f"Setup importado de: {file_path}")
-                
-            except json.JSONDecodeError:
-                 logger.error(f"Erro ao decodificar JSON importado: {file_path}")
-                 QMessageBox.critical(self, "Erro de Importação", "O arquivo selecionado não é um JSON válido.")
-            except ValueError as ve:
-                 logger.error(f"Erro de validação ao importar setup: {ve}")
-                 QMessageBox.critical(self, "Erro de Importação", f"Erro ao validar o arquivo de setup:\n{ve}")
-            except Exception as e:
-                logger.error(f"Erro ao importar setup de {file_path}: {e}")
-                QMessageBox.critical(
-                    self,
-                    "Erro de Importação",
-                    f"Ocorreu um erro inesperado ao importar o setup:\n\n{str(e)}"
-                )
+        if not file_path:
+            return
+            
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                imported_data = json.load(f)
+            
+            # Validação básica (pode ser mais robusta)
+            if not isinstance(imported_data, dict) or "car" not in imported_data or "track" not in imported_data:
+                raise ValueError("Formato de setup inválido.")
+            
+            # Gera ID se não existir
+            if "id" not in imported_data:
+                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                 imported_data["id"] = f"imported_{timestamp}"
+            
+            # Salva o setup importado no diretório padrão
+            self.save_setup_to_file(imported_data)
+            self.add_setup_card(imported_data) # Adiciona à lista
+            QMessageBox.information(self, "Importação Concluída", f"Setup importado com sucesso de:\n{os.path.basename(file_path)}")
+            logger.info(f"Setup importado: {imported_data.get('id')}")
+            
+        except json.JSONDecodeError:
+            QMessageBox.critical(self, "Erro de Importação", "O arquivo selecionado não é um JSON válido.")
+            logger.error(f"Erro ao decodificar JSON importado: {file_path}")
+        except ValueError as e:
+            QMessageBox.critical(self, "Erro de Importação", f"Erro no formato do arquivo de setup:\n{e}")
+            logger.error(f"Erro de formato ao importar setup: {file_path}, {e}")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro de Importação", f"Ocorreu um erro inesperado ao importar o setup:\n{e}")
+            logger.exception(f"Erro inesperado ao importar setup: {file_path}")
+
+    @pyqtSlot(dict, str)
+    def save_setup_to_file(self, setup_data: Dict[str, Any], file_path: Optional[str] = None):
+        """Salva os dados do setup em um arquivo JSON."""
+        if not file_path:
+            # Se nenhum caminho for fornecido (ex: após edição), usa o ID para salvar no diretório padrão
+            setup_id = setup_data.get("id")
+            if not setup_id:
+                logger.error("Não foi possível salvar o setup: ID ausente.")
+                QMessageBox.critical(self, "Erro ao Salvar", "Não foi possível salvar o setup editado (ID ausente).")
+                return
+            file_path = os.path.join(self.setups_dir, f"{setup_id}.json")
+        
+        try:
+            # Garante que o diretório de destino exista (caso seja exportação para outro local)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(setup_data, f, indent=4, ensure_ascii=False)
+            logger.info(f"Setup salvo com sucesso em: {file_path}")
+            # Se foi uma exportação (caminho explícito), informa o usuário
+            if file_path != os.path.join(self.setups_dir, f"{setup_data.get('id')}.json"):
+                 QMessageBox.information(self, "Exportação Concluída", f"Setup exportado para:\n{file_path}")
+        except Exception as e:
+            logger.exception(f"Erro ao salvar setup em {file_path}: {e}")
+            QMessageBox.critical(self, "Erro ao Salvar/Exportar", f"Não foi possível salvar o setup:\n{e}")
 
 # Exemplo de uso (para teste)
 if __name__ == '__main__':
-    from PyQt6.QtWidgets import QApplication
     import sys
-
     app = QApplication(sys.argv)
     widget = SetupWidget()
     widget.show()

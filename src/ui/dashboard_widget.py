@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import time
+import logging # Adicionado
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
@@ -25,10 +26,14 @@ try:
     capture_available = True
 except ImportError:
     capture_available = False
-    print("Módulos de captura não encontrados. Usando stubs.")
+    # Usar logging em vez de print
+    logging.warning("Módulos de captura não encontrados. Funcionalidade de tempo real desabilitada.")
+    CaptureManager = None # Define como None para verificações
 
 # Importação do widget de visualização do traçado
 from src.ui.track_view import TrackViewWidget
+
+logger = logging.getLogger(__name__) # Adicionado logger
 
 
 class StatusPanel(QFrame):
@@ -107,44 +112,44 @@ class StatusPanel(QFrame):
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_time)
     
-    def set_connected(self, connected: bool, simulator: str = "", is_real_data: bool = True):
+    @pyqtSlot(bool, str)
+    def set_connected(self, connected: bool, simulator: str = ""):
         """
         Atualiza o status de conexão.
         
         Args:
             connected: Se True, indica que está conectado
             simulator: Nome do simulador conectado
-            is_real_data: Se True, indica que está usando dados reais
         """
         if connected:
-            self.status_label.setText("Conectado")
+            self.status_label.setText("Capturando") # Mudado para "Capturando"
             self.status_label.setStyleSheet("color: green;")
             self.sim_label.setText(simulator)
-            
-            # Atualiza o modo de dados
-            if is_real_data:
-                self.data_mode_label.setText("Dados Reais")
-                self.data_mode_label.setStyleSheet("color: green;")
-            else:
-                self.data_mode_label.setText("Simulação")
-                self.data_mode_label.setStyleSheet("color: orange;")
+            self.data_mode_label.setText("Tempo Real") # Assumindo tempo real
+            self.data_mode_label.setStyleSheet("color: green;")
+            self._start_timer()
         else:
             self.status_label.setText("Desconectado")
             self.status_label.setStyleSheet("color: red;")
             self.sim_label.setText("Nenhum")
             self.data_mode_label.setText("Nenhum")
             self.data_mode_label.setStyleSheet("")
+            self._stop_timer()
+            self.time_label.setText("00:00:00") # Reseta o tempo
     
-    def start_capture(self):
-        """Inicia a captura de telemetria."""
-        self.capture_active = True
-        self.start_time = time.time()
-        self.timer.start(1000)  # Atualiza a cada segundo
+    def _start_timer(self):
+        """Inicia o timer de captura."""
+        if not self.capture_active:
+            self.capture_active = True
+            self.start_time = time.time()
+            self.timer.start(1000)  # Atualiza a cada segundo
+            self._update_time() # Atualiza imediatamente
     
-    def stop_capture(self):
-        """Para a captura de telemetria."""
-        self.capture_active = False
-        self.timer.stop()
+    def _stop_timer(self):
+        """Para o timer de captura."""
+        if self.capture_active:
+            self.capture_active = False
+            self.timer.stop()
     
     def _update_time(self):
         """Atualiza o tempo de captura."""
@@ -179,7 +184,7 @@ class SessionInfoPanel(QFrame):
         layout = QVBoxLayout(self)
         
         # Título
-        title = QLabel("Informações da Sessão")
+        title = QLabel("Informações da Sessão (Tempo Real)") # Título ajustado
         title.setObjectName("section-title")
         layout.addWidget(title)
         
@@ -198,45 +203,72 @@ class SessionInfoPanel(QFrame):
         self.car_label.setObjectName("metric-value")
         info_layout.addWidget(self.car_label, 1, 1)
         
-        # Condições
-        info_layout.addWidget(QLabel("Condições:"), 2, 0)
-        self.conditions_label = QLabel("--")
-        self.conditions_label.setObjectName("metric-value")
-        info_layout.addWidget(self.conditions_label, 2, 1)
+        # Condições (placeholder)
+        # info_layout.addWidget(QLabel("Condições:"), 2, 0)
+        # self.conditions_label = QLabel("--")
+        # self.conditions_label.setObjectName("metric-value")
+        # info_layout.addWidget(self.conditions_label, 2, 1)
         
         # Temperatura
-        info_layout.addWidget(QLabel("Temperatura:"), 3, 0)
-        self.temp_label = QLabel("--")
+        info_layout.addWidget(QLabel("Temperatura (Ar/Pista):"), 2, 0) # Ajustado
+        self.temp_label = QLabel("-- / --")
         self.temp_label.setObjectName("metric-value")
-        info_layout.addWidget(self.temp_label, 3, 1)
+        info_layout.addWidget(self.temp_label, 2, 1)
+
+        # Volta Atual / Total
+        info_layout.addWidget(QLabel("Volta:"), 3, 0)
+        self.lap_label = QLabel("-- / --")
+        self.lap_label.setObjectName("metric-value")
+        info_layout.addWidget(self.lap_label, 3, 1)
         
         layout.addLayout(info_layout)
         
         # Adiciona espaço no final
         layout.addStretch()
     
-    def update_session_info(self, session_info: Dict[str, Any]):
+    @pyqtSlot(dict)
+    def update_session_info(self, physics_data: Dict[str, Any]):
         """
-        Atualiza as informações da sessão.
+        Atualiza as informações da sessão com base nos dados de física.
         
         Args:
-            session_info: Dicionário com informações da sessão
+            physics_data: Dicionário com dados de física (ACC)
         """
-        self.track_label.setText(session_info.get("track", "--"))
-        self.car_label.setText(session_info.get("car", "--"))
-        self.conditions_label.setText(session_info.get("conditions", "--"))
+        # Adaptação para nomes de campos do ACC Shared Memory (exemplo)
+        self.track_label.setText(physics_data.get("track", "--"))
+        self.car_label.setText(physics_data.get("carModel", "--"))
         
-        temp = session_info.get("temperature", {})
-        if isinstance(temp, dict):
-            air_temp = temp.get("air", "--")
-            track_temp = temp.get("track", "--")
-            self.temp_label.setText(f"Ar: {air_temp}°C, Pista: {track_temp}°C")
-        else:
-            self.temp_label.setText(f"{temp}°C")
+        air_temp = physics_data.get("airTemp", "--")
+        track_temp = physics_data.get("roadTemp", "--")
+        self.temp_label.setText(f"{air_temp}°C / {track_temp}°C")
+
+        current_lap = physics_data.get("currentLap", 0)
+        total_laps = physics_data.get("numberOfLaps", 0)
+        self.lap_label.setText(f"{current_lap} / {total_laps}")
+
+    @pyqtSlot(dict)
+    def update_lmu_session_info(self, telemetry_data: Dict[str, Any]):
+        """
+        Atualiza as informações da sessão com base nos dados de telemetria do LMU/rF2.
+        
+        Args:
+            telemetry_data: Dicionário com dados de telemetria (LMU/rF2)
+        """
+        # Adaptação para nomes de campos do LMU/rF2 Shared Memory (exemplo)
+        self.track_label.setText(telemetry_data.get("mTrackName", "--"))
+        self.car_label.setText(telemetry_data.get("mVehicleName", "--"))
+        
+        air_temp = telemetry_data.get("mAmbientTemp", "--")
+        track_temp = telemetry_data.get("mTrackTemp", "--")
+        self.temp_label.setText(f"{air_temp}°C / {track_temp}°C")
+
+        # LMU/rF2 não tem um campo direto para volta atual/total na estrutura principal de telemetria
+        # Pode ser necessário obter de outra estrutura ou calcular
+        self.lap_label.setText("-- / --") # Placeholder
 
 
 class LapTimesPanel(QFrame):
-    """Painel de tempos de volta."""
+    """Painel de tempos de volta (pode ser usado para tempo real também)."""
     
     lap_selected = pyqtSignal(int)  # Sinal emitido quando uma volta é selecionada
     
@@ -257,7 +289,7 @@ class LapTimesPanel(QFrame):
         layout = QVBoxLayout(self)
         
         # Título
-        title = QLabel("Tempos de Volta")
+        title = QLabel("Tempos de Volta (Tempo Real)") # Título ajustado
         title.setObjectName("section-title")
         layout.addWidget(title)
         
@@ -283,35 +315,86 @@ class LapTimesPanel(QFrame):
         self.times_table.itemSelectionChanged.connect(self._on_selection_changed)
         
         layout.addWidget(self.times_table)
+        self.lap_times_data = {} # Armazena dados das voltas
     
-    def add_lap_time(self, lap_number: int, lap_time: float, sectors: List[float] = None):
+    @pyqtSlot(dict)
+    def update_lap_time(self, graphics_data: Dict[str, Any]):
         """
-        Adiciona um tempo de volta à tabela.
+        Adiciona ou atualiza um tempo de volta na tabela (baseado em dados gráficos do ACC).
         
         Args:
-            lap_number: Número da volta
-            lap_time: Tempo da volta em segundos
-            sectors: Lista de tempos de setor em segundos
+            graphics_data: Dicionário com dados gráficos (ACC)
         """
+        lap_number = graphics_data.get("completedLaps", 0) + 1 # Volta atual
+        last_lap_time_ms = graphics_data.get("lastLap", 0)
+        last_s1_ms = graphics_data.get("lastSplits", [0, 0, 0])[0]
+        last_s2_ms = graphics_data.get("lastSplits", [0, 0, 0])[1]
+        last_s3_ms = graphics_data.get("lastSplits", [0, 0, 0])[2]
+
+        # Adiciona a volta anterior se o tempo for válido
+        if last_lap_time_ms > 0:
+            prev_lap_number = lap_number - 1
+            if prev_lap_number > 0 and prev_lap_number not in self.lap_times_data:
+                lap_time_s = last_lap_time_ms / 1000.0
+                sectors_s = [last_s1_ms / 1000.0, last_s2_ms / 1000.0, last_s3_ms / 1000.0]
+                self._add_or_update_row(prev_lap_number, lap_time_s, sectors_s)
+                self.lap_times_data[prev_lap_number] = {"time": lap_time_s, "sectors": sectors_s}
+
+    @pyqtSlot(dict)
+    def update_lmu_lap_time(self, scoring_data: Dict[str, Any]):
+        """
+        Adiciona ou atualiza um tempo de volta na tabela (baseado em dados de scoring do LMU/rF2).
+        
+        Args:
+            scoring_data: Dicionário com dados de scoring (LMU/rF2)
+        """
+        # Encontrar os dados do jogador (mIsPlayer == 1)
+        player_vehicle = next((v for v in scoring_data.get("mVehicles", []) if v.get("mIsPlayer") == 1), None)
+        if not player_vehicle:
+            return
+
+        lap_number = player_vehicle.get("mTotalLaps", 0) # Número de voltas completas
+        last_lap_time_s = player_vehicle.get("mLastLapTime", 0)
+        last_s1_s = player_vehicle.get("mLastSector1", 0)
+        last_s2_s = player_vehicle.get("mLastSector2", 0)
+        # O tempo do setor 3 precisa ser calculado (TempoVolta - S1 - S2)
+        last_s3_s = 0
+        if last_lap_time_s > 0 and last_s1_s > 0 and last_s2_s > 0:
+             last_s3_s = last_lap_time_s - last_s1_s - last_s2_s
+             if last_s3_s < 0: last_s3_s = 0 # Evita tempos negativos
+
+        # Adiciona a volta anterior se o tempo for válido
+        if last_lap_time_s > 0 and lap_number > 0:
+            if lap_number not in self.lap_times_data:
+                sectors_s = [last_s1_s, last_s2_s, last_s3_s]
+                self._add_or_update_row(lap_number, last_lap_time_s, sectors_s)
+                self.lap_times_data[lap_number] = {"time": last_lap_time_s, "sectors": sectors_s}
+
+    def _add_or_update_row(self, lap_number: int, lap_time: float, sectors: List[float]):
+        """Adiciona ou atualiza uma linha na tabela."""
+        # Verifica se a volta já existe
+        for row in range(self.times_table.rowCount()):
+            item = self.times_table.item(row, 0)
+            if item and item.text() == str(lap_number):
+                # Atualiza a linha existente
+                self.times_table.setItem(row, 1, QTableWidgetItem(self._format_time(lap_time)))
+                for i, sector_time in enumerate(sectors[:3]):
+                    self.times_table.setItem(row, i + 2, QTableWidgetItem(self._format_time(sector_time)))
+                return
+
+        # Adiciona nova linha se não existir
         row = self.times_table.rowCount()
         self.times_table.insertRow(row)
-        
-        # Número da volta
         self.times_table.setItem(row, 0, QTableWidgetItem(str(lap_number)))
-        
-        # Tempo da volta
-        time_str = self._format_time(lap_time)
-        self.times_table.setItem(row, 1, QTableWidgetItem(time_str))
-        
-        # Tempos de setor
-        if sectors:
-            for i, sector_time in enumerate(sectors[:3]):
-                sector_str = self._format_time(sector_time)
-                self.times_table.setItem(row, i + 2, QTableWidgetItem(sector_str))
-    
+        self.times_table.setItem(row, 1, QTableWidgetItem(self._format_time(lap_time)))
+        for i, sector_time in enumerate(sectors[:3]):
+            self.times_table.setItem(row, i + 2, QTableWidgetItem(self._format_time(sector_time)))
+        self.times_table.scrollToBottom() # Garante visibilidade da última volta
+
     def clear_lap_times(self):
         """Limpa a tabela de tempos de volta."""
         self.times_table.setRowCount(0)
+        self.lap_times_data.clear()
     
     def _format_time(self, time_seconds: float) -> str:
         """
@@ -367,76 +450,92 @@ class TrackPanel(QFrame):
         layout = QVBoxLayout(self)
         
         # Título
-        title = QLabel("Traçado da Pista")
+        title = QLabel("Traçado da Pista (Tempo Real)") # Título ajustado
         title.setObjectName("section-title")
         layout.addWidget(title)
         
         # Widget de visualização do traçado
         self.track_view = TrackViewWidget()
         layout.addWidget(self.track_view)
+        self.current_lap_points = [] # Armazena pontos da volta atual
     
-    def update_track_view(self, lap_data: Dict[str, Any] = None):
+    @pyqtSlot(dict)
+    def update_track_view(self, physics_data: Dict[str, Any]):
         """
-        Atualiza a visualização do traçado.
+        Atualiza a visualização do traçado com base nos dados de física (ACC).
         
         Args:
-            lap_data: Dados da volta selecionada
+            physics_data: Dicionário com dados de física (ACC)
         """
-        if not lap_data:
-            # Limpa a visualização
-            self.track_view.set_track_points([])
-            self.track_view.set_lap_points([])
-            self.track_view.update_current_position(None)
-            self.track_view.highlight_point(None)
-            return
+        pos_x = physics_data.get("carCoordinates", [0, 0, 0])[0]
+        pos_z = physics_data.get("carCoordinates", [0, 0, 0])[2] # ACC usa Z para o plano horizontal
+        current_pos = [pos_x, pos_z]
+
+        # Adiciona ponto à volta atual (simplificado, sem lógica de nova volta)
+        # Idealmente, limparia em nova volta
+        self.current_lap_points.append(current_pos)
         
-        # Extrai os pontos do traçado
-        track_points = []
-        lap_points = []
-        
-        # Processa os pontos de dados
-        for point in lap_data.get("data_points", []):
-            position = point.get("position", [0, 0])
-            if len(position) >= 2:
-                lap_points.append([position[0], position[1]])
-        
-        # Se não houver pontos de traçado específicos, usa os pontos da volta
-        if not track_points and lap_points:
-            track_points = lap_points
-        
+        # Limita o número de pontos para performance
+        max_points = 5000 
+        if len(self.current_lap_points) > max_points:
+            self.current_lap_points = self.current_lap_points[-max_points:]
+
         # Atualiza a visualização
-        self.track_view.set_track_points(track_points)
-        self.track_view.set_lap_points(lap_points)
-        
-        # Atualiza a posição atual (último ponto)
-        if lap_points:
-            self.track_view.update_current_position(lap_points[-1])
-    
-    def highlight_point(self, point_index: int):
+        # self.track_view.set_track_points([]) # Não temos traçado base em tempo real ainda
+        self.track_view.set_lap_points(self.current_lap_points)
+        self.track_view.update_current_position(current_pos)
+
+    @pyqtSlot(dict)
+    def update_lmu_track_view(self, telemetry_data: Dict[str, Any]):
         """
-        Destaca um ponto específico no traçado.
+        Atualiza a visualização do traçado com base nos dados de telemetria (LMU/rF2).
         
         Args:
-            point_index: Índice do ponto a destacar
+            telemetry_data: Dicionário com dados de telemetria (LMU/rF2)
         """
-        # Obtém os pontos atuais
-        lap_points = self.track_view.lap_points
+        # Encontrar os dados do jogador (mIsPlayer == 1)
+        player_vehicle = next((v for v in telemetry_data.get("mVehicles", []) if v.get("mIsPlayer") == 1), None)
+        if not player_vehicle:
+            return
+            
+        pos_x = player_vehicle.get("mPos", [0, 0, 0])[0]
+        pos_z = player_vehicle.get("mPos", [0, 0, 0])[2] # rF2 também usa Z para o plano horizontal
+        current_pos = [pos_x, pos_z]
+
+        # Adiciona ponto à volta atual (simplificado)
+        self.current_lap_points.append(current_pos)
         
-        if lap_points and 0 <= point_index < len(lap_points):
-            self.track_view.highlight_point(lap_points[point_index])
-        else:
-            self.track_view.highlight_point(None)
+        # Limita o número de pontos para performance
+        max_points = 5000 
+        if len(self.current_lap_points) > max_points:
+            self.current_lap_points = self.current_lap_points[-max_points:]
+
+        # Atualiza a visualização
+        self.track_view.set_lap_points(self.current_lap_points)
+        self.track_view.update_current_position(current_pos)
+
+    def clear_track_view(self):
+        """Limpa a visualização do traçado."""
+        self.current_lap_points = []
+        self.track_view.set_track_points([])
+        self.track_view.set_lap_points([])
+        self.track_view.update_current_position(None)
+        self.track_view.highlight_point(None)
+    
+    # highlight_point não é usado em tempo real por enquanto
+    # def highlight_point(self, point_index: int):
+    #     ...
 
 
 class CaptureControlPanel(QFrame):
     """Painel de controle de captura de telemetria."""
     
     # Sinais
-    connect_requested = pyqtSignal(str)
-    disconnect_requested = pyqtSignal()
-    start_capture_requested = pyqtSignal()
+    # connect_requested = pyqtSignal(str) # Removido - Usaremos Start/Stop
+    # disconnect_requested = pyqtSignal() # Removido
+    start_capture_requested = pyqtSignal(str) # Emite o nome do simulador selecionado
     stop_capture_requested = pyqtSignal()
-    import_requested = pyqtSignal(str)
+    # import_requested = pyqtSignal(str) # Movido para o menu principal
     
     def __init__(self, parent=None):
         """
@@ -455,7 +554,7 @@ class CaptureControlPanel(QFrame):
         layout = QVBoxLayout(self)
         
         # Título
-        title = QLabel("Controle de Captura")
+        title = QLabel("Controle de Captura (Tempo Real)") # Título ajustado
         title.setObjectName("section-title")
         layout.addWidget(title)
         
@@ -464,274 +563,83 @@ class CaptureControlPanel(QFrame):
         sim_layout.addWidget(QLabel("Simulador:"))
         
         self.sim_combo = QComboBox()
-        self.sim_combo.addItem("Assetto Corsa Competizione")
-        self.sim_combo.addItem("Le Mans Ultimate")
+        # Adiciona apenas se CaptureManager estiver disponível
+        if CaptureManager:
+            supported_sims = CaptureManager.get_supported_simulators()
+            self.sim_combo.addItems(supported_sims)
+        else:
+            self.sim_combo.addItem("Nenhum disponível")
+            self.sim_combo.setEnabled(False)
+            
         sim_layout.addWidget(self.sim_combo)
-        
         layout.addLayout(sim_layout)
         
-        # Botões de conexão
-        conn_layout = QHBoxLayout()
-        
-        self.connect_button = QPushButton("Conectar")
-        self.disconnect_button = QPushButton("Desconectar")
-        self.disconnect_button.setEnabled(False)
-        
-        conn_layout.addWidget(self.connect_button)
-        conn_layout.addWidget(self.disconnect_button)
-        
-        layout.addLayout(conn_layout)
-        
-        # Botões de captura
-        capture_layout = QHBoxLayout()
+        # Botões de controle
+        control_layout = QHBoxLayout()
         
         self.start_button = QPushButton("Iniciar Captura")
-        self.start_button.setEnabled(False)
         self.stop_button = QPushButton("Parar Captura")
         self.stop_button.setEnabled(False)
         
-        capture_layout.addWidget(self.start_button)
-        capture_layout.addWidget(self.stop_button)
-        
-        layout.addLayout(capture_layout)
-        
-        # Botões de importação
-        import_layout = QHBoxLayout()
-        
-        self.import_button = QPushButton("Importar Telemetria")
-        self.load_example_button = QPushButton("Carregar Exemplo")
-        
-        import_layout.addWidget(self.import_button)
-        import_layout.addWidget(self.load_example_button)
-        
-        layout.addLayout(import_layout)
-        
-        # Conecta sinais
-        self.connect_button.clicked.connect(self._on_connect_clicked)
-        self.disconnect_button.clicked.connect(self._on_disconnect_clicked)
+        control_layout.addWidget(self.start_button)
+        control_layout.addWidget(self.stop_button)
+        layout.addLayout(control_layout)
+
+        # Conecta os botões aos slots internos
         self.start_button.clicked.connect(self._on_start_clicked)
         self.stop_button.clicked.connect(self._on_stop_clicked)
-        self.import_button.clicked.connect(self._on_import_clicked)
-        self.load_example_button.clicked.connect(self._on_load_example_clicked)
-        
-        # Estado
-        self.connected = False
-        self.capturing = False
-    
-    def set_connected(self, connected: bool):
-        """
-        Atualiza o estado de conexão.
-        
-        Args:
-            connected: Se True, indica que está conectado
-        """
-        self.connected = connected
-        
-        # Atualiza os botões
-        self.connect_button.setEnabled(not connected)
-        self.disconnect_button.setEnabled(connected)
-        self.start_button.setEnabled(connected and not self.capturing)
-        self.sim_combo.setEnabled(not connected)
-    
-    def set_capturing(self, capturing: bool):
-        """
-        Atualiza o estado de captura.
-        
-        Args:
-            capturing: Se True, indica que está capturando
-        """
-        self.capturing = capturing
-        
-        # Atualiza os botões
-        self.start_button.setEnabled(self.connected and not capturing)
-        self.stop_button.setEnabled(capturing)
-        self.disconnect_button.setEnabled(self.connected and not capturing)
-    
-    def _on_connect_clicked(self):
-        """Manipula o clique no botão 'Conectar'."""
-        simulator = self.sim_combo.currentText()
-        self.connect_requested.emit(simulator)
-    
-    def _on_disconnect_clicked(self):
-        """Manipula o clique no botão 'Desconectar'."""
-        self.disconnect_requested.emit()
-    
+
+        # Desabilita botões se captura não estiver disponível
+        if not capture_available:
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+            # Adiciona uma label informativa
+            info_label = QLabel("Módulos de captura não encontrados.")
+            info_label.setStyleSheet("color: orange;")
+            layout.addWidget(info_label)
+
+        layout.addStretch() # Adiciona espaço
+
+    @pyqtSlot()
     def _on_start_clicked(self):
-        """Manipula o clique no botão 'Iniciar Captura'."""
-        self.start_capture_requested.emit()
-    
+        """Slot para o clique no botão Iniciar Captura."""
+        selected_sim = self.sim_combo.currentText()
+        if selected_sim and selected_sim != "Nenhum disponível":
+            logger.info(f"Solicitando início da captura para: {selected_sim}")
+            self.start_capture_requested.emit(selected_sim)
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.sim_combo.setEnabled(False) # Impede troca durante captura
+
+    @pyqtSlot()
     def _on_stop_clicked(self):
-        """Manipula o clique no botão 'Parar Captura'."""
+        """Slot para o clique no botão Parar Captura."""
+        logger.info("Solicitando parada da captura.")
         self.stop_capture_requested.emit()
-    
-    def _on_import_clicked(self):
-        """Manipula o clique no botão 'Importar Telemetria'."""
-        file_dialog = QFileDialog()
-        file_path, _ = file_dialog.getOpenFileName(
-            self,
-            "Importar Telemetria",
-            "",
-            "Arquivos de Telemetria (*.json *.csv);;Todos os Arquivos (*)"
-        )
-        
-        if file_path:
-            self.import_requested.emit(file_path)
-    
-    def _on_load_example_clicked(self):
-        """Manipula o clique no botão 'Carregar Exemplo'."""
-        # Carrega dados de exemplo
-        example_data = self._generate_example_data()
-        
-        # Salva em um arquivo temporário
-        temp_dir = os.path.join(os.path.expanduser("~"), "RaceTelemetryAnalyzer", "temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        temp_file = os.path.join(temp_dir, "example_data.json")
-        
-        with open(temp_file, "w") as f:
-            json.dump(example_data, f)
-        
-        # Emite o sinal de importação
-        self.import_requested.emit(temp_file)
-    
-    def _generate_example_data(self) -> Dict[str, Any]:
-        """
-        Gera dados de exemplo para demonstração.
-        
-        Returns:
-            Dicionário com dados de exemplo
-        """
-        import random
-        import math
-        
-        # Dados da sessão
-        session = {
-            "track": "Monza",
-            "car": "Ford Mustang GT3",
-            "conditions": "Ensolarado",
-            "temperature": {
-                "air": 25,
-                "track": 30
-            }
-        }
-        
-        # Voltas
-        laps = []
-        
-        # Gera 5 voltas de exemplo
-        for lap_num in range(1, 6):
-            # Tempo base da volta (1:50.000)
-            base_time = 110.0
-            
-            # Variação aleatória
-            variation = random.uniform(-2.0, 2.0)
-            lap_time = base_time + variation
-            
-            # Setores (aproximadamente 1/3 do tempo total cada)
-            sector1 = lap_time / 3 + random.uniform(-0.5, 0.5)
-            sector2 = lap_time / 3 + random.uniform(-0.5, 0.5)
-            sector3 = lap_time - sector1 - sector2
-            
-            # Pontos de dados
-            data_points = []
-            
-            # Gera pontos ao longo da volta
-            num_points = 1000
-            for i in range(num_points):
-                # Progresso na volta (0 a 1)
-                progress = i / num_points
-                
-                # Distância percorrida
-                distance = progress * 5800  # Comprimento aproximado de Monza
-                
-                # Posição (simplificada para um traçado mais realista de Monza)
-                # Cria uma forma que se assemelha ao traçado de Monza
-                t = progress * 2 * math.pi
-                
-                # Reta principal e variante
-                if progress < 0.2:
-                    x = 1000 * progress * 5
-                    y = 0
-                # Curva Biassono
-                elif progress < 0.3:
-                    angle = (progress - 0.2) * 10 * math.pi / 2
-                    x = 1000 + 300 * math.cos(angle)
-                    y = 300 * math.sin(angle)
-                # Lesmo 1 e 2
-                elif progress < 0.5:
-                    x = 1000 - (progress - 0.3) * 2000
-                    y = 300 + math.sin((progress - 0.3) * 20) * 100
-                # Curva Ascari
-                elif progress < 0.7:
-                    angle = (progress - 0.5) * 10 * math.pi
-                    x = 0 - 300 * math.cos(angle)
-                    y = 300 - 300 * math.sin(angle)
-                # Parabolica e reta final
-                else:
-                    angle = (progress - 0.7) * 5 * math.pi / 2
-                    radius = 500 - (progress - 0.7) * 1500
-                    x = -300 + radius * math.cos(angle)
-                    y = 0 + radius * math.sin(angle)
-                
-                # Adiciona ruído para tornar mais realista
-                x += random.uniform(-10, 10)
-                y += random.uniform(-10, 10)
-                
-                # Velocidade (varia ao longo da volta)
-                speed_factor = 1.0 + 0.2 * math.sin(progress * 2 * math.pi * 4)
-                speed = 200 * speed_factor  # Velocidade média de 200 km/h
-                
-                # RPM
-                rpm = 5000 + 3000 * speed_factor
-                
-                # Marcha
-                gear = min(6, max(1, int(speed / 50) + 1))
-                
-                # Pedais
-                throttle = 0.8 + 0.2 * math.sin(progress * 2 * math.pi * 8)
-                brake = max(0, 0.5 - throttle)
-                
-                # Ponto de dados
-                data_point = {
-                    "time": progress * lap_time,
-                    "distance": distance,
-                    "position": [x, y],
-                    "speed": speed,
-                    "rpm": rpm,
-                    "gear": gear,
-                    "throttle": throttle,
-                    "brake": brake
-                }
-                
-                data_points.append(data_point)
-            
-            # Volta
-            lap = {
-                "lap_number": lap_num,
-                "lap_time": lap_time,
-                "sectors": [
-                    {"sector": 1, "time": sector1},
-                    {"sector": 2, "time": sector2},
-                    {"sector": 3, "time": sector3}
-                ],
-                "data_points": data_points
-            }
-            
-            laps.append(lap)
-        
-        # Dados completos
-        return {
-            "session": session,
-            "laps": laps
-        }
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.sim_combo.setEnabled(True) # Libera troca após parar
+
+    # Slot para ser chamado externamente quando a captura é parada (ex: erro)
+    @pyqtSlot()
+    def force_stop_ui_update(self):
+         """Atualiza a UI para o estado parado, chamado externamente."""
+         logger.info("Atualizando UI para estado de captura parada (forçado).")
+         self.start_button.setEnabled(True)
+         self.stop_button.setEnabled(False)
+         self.sim_combo.setEnabled(True)
 
 
 class DashboardWidget(QWidget):
-    """Widget principal de Dashboard."""
+    """Widget principal do Dashboard."""
     
+    # Sinal para solicitar início/parada da captura no backend
+    start_capture_signal = pyqtSignal(str)
+    stop_capture_signal = pyqtSignal()
+
     def __init__(self, parent=None):
         """
-        Inicializa o widget de Dashboard.
+        Inicializa o widget do Dashboard.
         
         Args:
             parent: Widget pai
@@ -739,344 +647,157 @@ class DashboardWidget(QWidget):
         super().__init__(parent)
         
         # Layout principal
-        layout = QVBoxLayout(self)
+        main_layout = QHBoxLayout(self)
         
-        # Painel de controle
-        self.control_panel = CaptureControlPanel()
-        layout.addWidget(self.control_panel)
+        # Coluna Esquerda (Controles e Status)
+        left_column = QVBoxLayout()
         
-        # Splitter principal
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Painel de Controle de Captura
+        self.capture_control_panel = CaptureControlPanel()
+        left_column.addWidget(self.capture_control_panel)
         
-        # Painel esquerdo
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Status
+        # Painel de Status
         self.status_panel = StatusPanel()
-        left_layout.addWidget(self.status_panel)
+        left_column.addWidget(self.status_panel)
         
-        # Informações da sessão
-        self.session_panel = SessionInfoPanel()
-        left_layout.addWidget(self.session_panel)
+        # Painel de Informações da Sessão
+        self.session_info_panel = SessionInfoPanel()
+        left_column.addWidget(self.session_info_panel)
         
-        # Visualização do traçado
-        self.track_panel = TrackPanel()
-        left_layout.addWidget(self.track_panel)
-        
-        # Painel direito
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Tempos de volta
+        # Painel de Tempos de Volta
         self.lap_times_panel = LapTimesPanel()
-        right_layout.addWidget(self.lap_times_panel)
+        left_column.addWidget(self.lap_times_panel)
         
-        # Adiciona painéis ao splitter
-        main_splitter.addWidget(left_panel)
-        main_splitter.addWidget(right_panel)
+        left_column.addStretch()
+        main_layout.addLayout(left_column, 1) # Coluna esquerda com peso 1
         
-        # Define proporções iniciais
-        main_splitter.setSizes([400, 600])
+        # Coluna Direita (Visualização)
+        right_column = QVBoxLayout()
         
-        layout.addWidget(main_splitter)
+        # Painel do Traçado
+        self.track_panel = TrackPanel()
+        right_column.addWidget(self.track_panel)
         
-        # Conecta sinais
-        self.control_panel.connect_requested.connect(self._on_connect_requested)
-        self.control_panel.disconnect_requested.connect(self._on_disconnect_requested)
-        self.control_panel.start_capture_requested.connect(self._on_start_capture_requested)
-        self.control_panel.stop_capture_requested.connect(self._on_stop_capture_requested)
-        self.control_panel.import_requested.connect(self._on_import_requested)
-        self.lap_times_panel.lap_selected.connect(self._on_lap_selected)
+        # Adicionar outros painéis de visualização aqui (ex: gráficos tempo real)
+        # placeholder_graph = QLabel("Gráficos Tempo Real (Placeholder)")
+        # placeholder_graph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # placeholder_graph.setFrameShape(QFrame.Shape.StyledPanel)
+        # right_column.addWidget(placeholder_graph)
         
-        # Timer para atualização periódica
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self._update_telemetry_data)
-        
-        # Inicializa o gerenciador de captura
-        self.capture_manager = None
-        if capture_available:
-            try:
-                self.capture_manager = CaptureManager()
-            except Exception as e:
-                print(f"Erro ao inicializar o gerenciador de captura: {str(e)}")
-        
-        # Estado
-        self.connected = False
-        self.capturing = False
-        self.current_simulator = ""
-        self.telemetry_data = None
-        self.is_real_data = False
-        self.selected_lap = None
-    
-    def _on_connect_requested(self, simulator: str):
-        """
-        Manipula a solicitação de conexão.
-        
-        Args:
-            simulator: Nome do simulador
-        """
-        if not self.capture_manager:
-            QMessageBox.warning(
-                self,
-                "Aviso",
-                "Módulos de captura não disponíveis. Usando modo de demonstração."
-            )
-            # Simula conexão bem-sucedida
-            self._handle_connection_success(simulator, False)
-            return
-        
-        try:
-            # Tenta conectar ao simulador
-            success = self.capture_manager.connect(simulator)
-            
-            if success:
-                # Verifica se está usando dados reais ou simulação
-                is_real_data = hasattr(self.capture_manager, 'capture_module') and self.capture_manager.capture_module is not None
-                
-                self._handle_connection_success(simulator, is_real_data)
-            else:
-                QMessageBox.warning(
-                    self,
-                    "Erro de Conexão",
-                    f"Não foi possível conectar ao simulador {simulator}.\n\n"
-                    "Verifique se o simulador está em execução."
-                )
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Erro",
-                f"Ocorreu um erro ao tentar conectar:\n\n{str(e)}"
-            )
-    
-    def _handle_connection_success(self, simulator: str, is_real_data: bool):
-        """
-        Manipula uma conexão bem-sucedida.
-        
-        Args:
-            simulator: Nome do simulador
-            is_real_data: Se True, indica que está usando dados reais
-        """
-        self.connected = True
-        self.current_simulator = simulator
-        self.is_real_data = is_real_data
-        
-        # Atualiza a interface
-        self.control_panel.set_connected(True)
-        self.status_panel.set_connected(True, simulator, is_real_data)
-        
-        # Atualiza as informações da sessão
-        if self.capture_manager:
-            session_info = self.capture_manager.get_telemetry_data().get("session", {})
-            self.session_panel.update_session_info(session_info)
-        
-        # Exibe mensagem de aviso se estiver usando simulação
-        if not is_real_data:
-            QMessageBox.information(
-                self,
-                "Modo de Simulação",
-                f"Conectado ao {simulator} em modo de simulação.\n\n"
-                "Os dados exibidos são simulados e não representam telemetria real."
-            )
-    
-    def _on_disconnect_requested(self):
-        """Manipula a solicitação de desconexão."""
-        if self.capturing:
-            self._on_stop_capture_requested()
-        
-        if self.capture_manager:
-            try:
-                self.capture_manager.disconnect()
-            except Exception as e:
-                print(f"Erro ao desconectar: {str(e)}")
-        
-        # Atualiza o estado
-        self.connected = False
-        self.current_simulator = ""
-        self.is_real_data = False
-        
-        # Atualiza a interface
-        self.control_panel.set_connected(False)
-        self.status_panel.set_connected(False)
-        self.lap_times_panel.clear_lap_times()
-        self.track_panel.update_track_view(None)
-    
-    def _on_start_capture_requested(self):
-        """Manipula a solicitação de início de captura."""
-        if not self.connected:
-            return
-        
-        if self.capture_manager:
-            try:
-                success = self.capture_manager.start_capture()
-                
-                if success:
-                    self.capturing = True
-                    self.control_panel.set_capturing(True)
-                    self.status_panel.start_capture()
-                    
-                    # Inicia o timer de atualização
-                    self.update_timer.start(500)  # Atualiza a cada 500ms
-                else:
-                    QMessageBox.warning(
-                        self,
-                        "Erro",
-                        "Não foi possível iniciar a captura de telemetria."
-                    )
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Erro",
-                    f"Ocorreu um erro ao iniciar a captura:\n\n{str(e)}"
-                )
-        else:
-            # Simula captura bem-sucedida
-            self.capturing = True
-            self.control_panel.set_capturing(True)
-            self.status_panel.start_capture()
-            
-            # Carrega dados de exemplo
-            self._on_load_example_clicked()
-    
-    def _on_stop_capture_requested(self):
-        """Manipula a solicitação de parada de captura."""
-        if not self.capturing:
-            return
-        
-        if self.capture_manager:
-            try:
-                success = self.capture_manager.stop_capture()
-                
-                if not success:
-                    QMessageBox.warning(
-                        self,
-                        "Aviso",
-                        "Houve um problema ao parar a captura de telemetria."
-                    )
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Erro",
-                    f"Ocorreu um erro ao parar a captura:\n\n{str(e)}"
-                )
-        
-        # Atualiza o estado
-        self.capturing = False
-        self.control_panel.set_capturing(False)
-        self.status_panel.stop_capture()
-        
-        # Para o timer de atualização
-        self.update_timer.stop()
-    
-    def _on_import_requested(self, file_path: str):
-        """
-        Manipula a solicitação de importação de telemetria.
-        
-        Args:
-            file_path: Caminho para o arquivo de telemetria
-        """
-        try:
-            # Carrega o arquivo
-            with open(file_path, "r") as f:
-                self.telemetry_data = json.load(f)
-            
-            # Atualiza as informações da sessão
-            session_info = self.telemetry_data.get("session", {})
-            self.session_panel.update_session_info(session_info)
-            
-            # Atualiza os tempos de volta
+        right_column.addStretch()
+        main_layout.addLayout(right_column, 3) # Coluna direita com peso 3
+
+        # Conecta sinais do painel de controle aos sinais do widget
+        self.capture_control_panel.start_capture_requested.connect(self.start_capture_signal)
+        self.capture_control_panel.stop_capture_requested.connect(self.stop_capture_signal)
+
+        # Conecta sinais de atualização de dados aos slots dos painéis
+        # Estes sinais devem ser emitidos pelo CaptureManager ou pela MainWindow
+        # self.data_updated_signal.connect(self.status_panel.set_connected)
+        # self.physics_updated_signal.connect(self.session_info_panel.update_session_info)
+        # self.graphics_updated_signal.connect(self.lap_times_panel.update_lap_time)
+        # self.physics_updated_signal.connect(self.track_panel.update_track_view)
+        # self.telemetry_updated_signal.connect(self.session_info_panel.update_lmu_session_info)
+        # self.scoring_updated_signal.connect(self.lap_times_panel.update_lmu_lap_time)
+        # self.telemetry_updated_signal.connect(self.track_panel.update_lmu_track_view)
+
+        logger.info("DashboardWidget inicializado.")
+
+    # Slots para receber atualizações do backend/CaptureManager
+    @pyqtSlot(bool, str)
+    def update_connection_status(self, connected: bool, simulator: str):
+        """Atualiza o status de conexão em todos os painéis relevantes."""
+        logger.debug(f"Atualizando status de conexão UI: Conectado={connected}, Sim={simulator}")
+        self.status_panel.set_connected(connected, simulator)
+        if not connected:
+            # Limpa painéis se desconectado
+            self.session_info_panel.update_session_info({}) # Limpa info da sessão
             self.lap_times_panel.clear_lap_times()
-            for lap in self.telemetry_data.get("laps", []):
-                lap_number = lap.get("lap_number", 0)
-                lap_time = lap.get("lap_time", 0)
-                
-                sectors = []
-                for sector in lap.get("sectors", []):
-                    sectors.append(sector.get("time", 0))
-                
-                self.lap_times_panel.add_lap_time(lap_number, lap_time, sectors)
-            
-            # Atualiza a visualização do traçado com a primeira volta
-            if self.telemetry_data.get("laps"):
-                self.track_panel.update_track_view(self.telemetry_data["laps"][0])
-            
-            QMessageBox.information(
-                self,
-                "Importação Concluída",
-                f"Arquivo de telemetria importado com sucesso.\n\n"
-                f"Voltas carregadas: {len(self.telemetry_data.get('laps', []))}"
-            )
-        
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Erro",
-                f"Ocorreu um erro ao importar o arquivo:\n\n{str(e)}"
-            )
+            self.track_panel.clear_track_view()
+            self.capture_control_panel.force_stop_ui_update() # Garante que botões voltem ao normal
+
+    @pyqtSlot(dict)
+    def update_acc_physics_data(self, data: dict):
+        """Atualiza painéis com dados de física do ACC."""
+        # logger.debug("Atualizando UI com dados de física ACC")
+        self.session_info_panel.update_session_info(data)
+        self.track_panel.update_track_view(data)
+
+    @pyqtSlot(dict)
+    def update_acc_graphics_data(self, data: dict):
+        """Atualiza painéis com dados gráficos do ACC."""
+        # logger.debug("Atualizando UI com dados gráficos ACC")
+        self.lap_times_panel.update_lap_time(data)
+
+    @pyqtSlot(dict)
+    def update_lmu_telemetry_data(self, data: dict):
+        """Atualiza painéis com dados de telemetria do LMU."""
+        # logger.debug("Atualizando UI com dados de telemetria LMU")
+        self.session_info_panel.update_lmu_session_info(data)
+        self.track_panel.update_lmu_track_view(data)
+
+    @pyqtSlot(dict)
+    def update_lmu_scoring_data(self, data: dict):
+        """Atualiza painéis com dados de scoring do LMU."""
+        # logger.debug("Atualizando UI com dados de scoring LMU")
+        self.lap_times_panel.update_lmu_lap_time(data)
+
+# Exemplo de uso (para teste isolado do Dashboard)
+if __name__ == '__main__':
+    from PyQt6.QtWidgets import QApplication
+    import sys
+
+    # Configuração básica de logging para teste
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    app = QApplication(sys.argv)
     
-    def _on_load_example_clicked(self):
-        """Manipula o clique no botão 'Carregar Exemplo'."""
-        # Usa o método do painel de controle
-        self.control_panel._on_load_example_clicked()
+    # Simula CaptureManager se não estiver disponível
+    if not CaptureManager:
+        class MockCaptureManager:
+            def get_supported_simulators(self):
+                return ["ACC (Mock)", "LMU (Mock)"]
+            # Adicione outros métodos mock se necessário
+        CaptureManager = MockCaptureManager
+
+    dashboard = DashboardWidget()
+    dashboard.setWindowTitle("Teste do Dashboard Widget")
+    dashboard.setGeometry(100, 100, 1200, 700)
+
+    # Simula sinais para teste
+    def simulate_connect():
+        dashboard.update_connection_status(True, "ACC (Mock)")
+
+    def simulate_disconnect():
+        dashboard.update_connection_status(False, "")
+
+    def simulate_acc_data():
+        physics = {"track": "Monza", "carModel": "Ferrari 488 GT3 Evo", "airTemp": 25, "roadTemp": 35, "currentLap": 3, "numberOfLaps": 10, "carCoordinates": [time.time() % 100, 0, (time.time()*2) % 150]}
+        graphics = {"completedLaps": 2, "lastLap": 95500, "lastSplits": [31200, 30100, 34200]}
+        dashboard.update_acc_physics_data(physics)
+        dashboard.update_acc_graphics_data(graphics)
+
+    # Conecta botões de teste (apenas para este exemplo)
+    test_button_connect = QPushButton("Simular Conexão")
+    test_button_connect.clicked.connect(simulate_connect)
     
-    def _update_telemetry_data(self):
-        """Atualiza os dados de telemetria periodicamente."""
-        if not self.capturing or not self.capture_manager:
-            return
-        
-        try:
-            # Obtém os dados mais recentes
-            new_data = self.capture_manager.get_telemetry_data()
-            
-            if not new_data:
-                return
-            
-            # Atualiza os dados
-            self.telemetry_data = new_data
-            
-            # Atualiza as informações da sessão
-            session_info = new_data.get("session", {})
-            self.session_panel.update_session_info(session_info)
-            
-            # Atualiza os tempos de volta
-            self.lap_times_panel.clear_lap_times()
-            for lap in new_data.get("laps", []):
-                lap_number = lap.get("lap_number", 0)
-                lap_time = lap.get("lap_time", 0)
-                
-                sectors = []
-                for sector in lap.get("sectors", []):
-                    sectors.append(sector.get("time", 0))
-                
-                self.lap_times_panel.add_lap_time(lap_number, lap_time, sectors)
-            
-            # Atualiza a visualização do traçado com a última volta
-            if new_data.get("laps"):
-                last_lap = new_data["laps"][-1]
-                self.track_panel.update_track_view(last_lap)
-        
-        except Exception as e:
-            print(f"Erro ao atualizar dados de telemetria: {str(e)}")
+    test_button_disconnect = QPushButton("Simular Desconexão")
+    test_button_disconnect.clicked.connect(simulate_disconnect)
+
+    test_button_data = QPushButton("Simular Dados ACC")
+    test_button_data.clicked.connect(simulate_acc_data)
+
+    # Adiciona botões de teste ao layout (não ideal, mas funciona para teste)
+    test_layout = QHBoxLayout()
+    test_layout.addWidget(test_button_connect)
+    test_layout.addWidget(test_button_disconnect)
+    test_layout.addWidget(test_button_data)
     
-    def _on_lap_selected(self, lap_number: int):
-        """
-        Manipula a seleção de uma volta.
-        
-        Args:
-            lap_number: Número da volta selecionada
-        """
-        if not self.telemetry_data:
-            return
-        
-        # Procura a volta selecionada
-        selected_lap = None
-        for lap in self.telemetry_data.get("laps", []):
-            if lap.get("lap_number") == lap_number:
-                selected_lap = lap
-                break
-        
-        if selected_lap:
-            self.selected_lap = selected_lap
-            self.track_panel.update_track_view(selected_lap)
+    # Encontra o layout da coluna esquerda para adicionar os botões de teste
+    left_layout = dashboard.layout().itemAt(0).layout()
+    if left_layout:
+        left_layout.addLayout(test_layout)
+
+    dashboard.show()
+    sys.exit(app.exec())
+
